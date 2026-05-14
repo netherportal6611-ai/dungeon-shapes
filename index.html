@@ -1494,7 +1494,6 @@
 
       for (let i = pulserRings.length - 1; i >= 0; i--) {
         const ring = pulserRings[i];
-        updateSyncedRingInterpolation(ring, dt);
         ring.radius += ring.speed * dt;
         ring.life -= dt;
 
@@ -1517,7 +1516,6 @@
 
       for (let i = bossHazards.length - 1; i >= 0; i--) {
         const hazard = bossHazards[i];
-        updateSyncedHazardInterpolation(hazard, dt);
         hazard.timer = (hazard.timer || 0) + dt;
         if (hazard.type === "doupDroub") {
           hazard.rotation += (hazard.rotationSpeed || 0) * dt;
@@ -2322,7 +2320,9 @@
       const rings = Array.isArray(msg.pulserRings) ? msg.pulserRings : [];
       const hazards = Array.isArray(msg.bossHazards) ? msg.bossHazards : [];
 
-      // Los proyectiles simples se siguen reemplazando porque duran poco.
+      // IMPORTANTE: los ataques hostiles no se interpolan.
+      // Son hitboxes de daño, así que el invitado debe ver exactamente el snapshot del host.
+      // Si los suavizamos, pueden desaparecer/atravesar/desincronizarse.
       for (let i = projectiles.length - 1; i >= 0; i--) {
         if (projectiles[i].enemyProjectile) projectiles.splice(i, 1);
       }
@@ -2330,42 +2330,15 @@
         projectiles.push(deserializeOnlineHostileProjectile(snap));
       }
 
-      const ringById = new Map(pulserRings.map(r => [r._onlineId, r]).filter(([id]) => !!id));
-      const nextRings = [];
-      for (const snap of rings) {
-        const incoming = deserializeOnlinePulserRing(snap);
-        const existing = incoming._onlineId ? ringById.get(incoming._onlineId) : null;
-        if (existing) {
-          applySyncedRingSnapshot(existing, incoming);
-          nextRings.push(existing);
-        } else {
-          incoming._netTargetX = incoming.x;
-          incoming._netTargetY = incoming.y;
-          incoming._netTargetRadius = incoming.radius;
-          nextRings.push(incoming);
-        }
-      }
       pulserRings.length = 0;
-      pulserRings.push(...nextRings);
-
-      const hazardById = new Map(bossHazards.map(h => [h._onlineId, h]).filter(([id]) => !!id));
-      const nextHazards = [];
-      for (const snap of hazards) {
-        const incoming = deserializeOnlineBossHazard(snap);
-        const existing = incoming._onlineId ? hazardById.get(incoming._onlineId) : null;
-        if (existing && existing.type === incoming.type) {
-          applySyncedHazardSnapshot(existing, incoming);
-          nextHazards.push(existing);
-        } else {
-          incoming._netTargetX = incoming.x;
-          incoming._netTargetY = incoming.y;
-          incoming._netTargetRotation = incoming.rotation;
-          incoming._netTargetRadius = incoming.radius;
-          nextHazards.push(incoming);
-        }
+      for (const snap of rings) {
+        pulserRings.push(deserializeOnlinePulserRing(snap));
       }
+
       bossHazards.length = 0;
-      bossHazards.push(...nextHazards);
+      for (const snap of hazards) {
+        bossHazards.push(deserializeOnlineBossHazard(snap));
+      }
     }
 
     function sendOnlineEnemySnapshot(dt) {
@@ -5734,6 +5707,13 @@
           enemy.innerRotation -= (enemy.rotationSpeed || 0.702) * dt;
           if (Number.isFinite(Number(enemy._netTargetRotation))) enemy.rotation = approachAngle(enemy.rotation, enemy._netTargetRotation, rotAmount);
           if (Number.isFinite(Number(enemy._netTargetInnerRotation))) enemy.innerRotation = approachAngle(enemy.innerRotation || 0, enemy._netTargetInnerRotation, rotAmount);
+
+          // El Drouber no usa proyectiles ni rings: su daño es por rayos geométricos.
+          // Como el host no puede calcular esa colisión contra la pantalla del invitado con precisión,
+          // el invitado debe aplicar el daño localmente usando el enemigo sincronizado.
+          if (game.waveState === "combat" && game.roomStartTimer <= 0 && !player.downed && !isPlayerDamageInvulnerable() && drouberRaysHitPlayer(enemy)) {
+            damagePlayer();
+          }
           continue;
         }
 
@@ -6693,7 +6673,6 @@
     function updatePulserRings(dt) {
       for (let i = pulserRings.length - 1; i >= 0; i--) {
         const ring = pulserRings[i];
-        updateSyncedRingInterpolation(ring, dt);
         ring.radius += ring.speed * dt;
         ring.life -= dt;
 
