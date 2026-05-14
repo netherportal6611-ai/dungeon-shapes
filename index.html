@@ -1156,8 +1156,6 @@
     let onlineSendTimer = 0;
     let onlineEnemySendTimer = 0;
     let onlineEnemyIdCounter = 1;
-    let onlineRingIdCounter = 1;
-    let onlineHazardIdCounter = 1;
     let onlineLastEnemySnapshotAt = 0;
     const onlineDamageCooldowns = {};
     const onlineLocalPostBossRewards = {};
@@ -1740,6 +1738,7 @@
         phase2: !!enemy.phase2,
         shieldHp: enemy.shieldHp || 0,
         shieldMaxHp: enemy.shieldMaxHp || 0,
+        hitFlash: enemy.hitFlash || 0,
       };
 
       // Campos visuales/mecánicos seguros para que el dibujo del invitado no se rompa.
@@ -2172,6 +2171,7 @@
         rotateTimer: 0,
         life: Number(snap.life) || 0.1,
         color: snap.color || game.ruby,
+        hitFlash: Number(snap.hitFlash) || 0,
       };
     }
 
@@ -2456,6 +2456,9 @@
         enemy._onlineId = snap.id;
         enemy.type = snap.type || enemy.type;
 
+        const prevHpForOnlineFeedback = Number.isFinite(Number(enemy.hp)) ? Number(enemy.hp) : Number(snap.hp);
+        const prevShieldForOnlineFeedback = Number.isFinite(Number(enemy.shieldHp)) ? Number(enemy.shieldHp) : Number(snap.shieldHp || 0);
+
         // FIX: en invitado, la interpolación anterior podía dejar enemigos/ataques desfasados
         // o directamente sin actualizar. Volvemos a usar el snapshot del host como fuente real.
         if (Number.isFinite(wx)) enemy.x = wx;
@@ -2471,13 +2474,42 @@
         const prevPulseTimer = Number.isFinite(Number(enemy._guestLastPulseTimer)) ? Number(enemy._guestLastPulseTimer) : null;
 
         enemy.size = Number.isFinite(Number(snap.size)) ? Number(snap.size) : enemy.size;
-        enemy.hp = Number.isFinite(Number(snap.hp)) ? Number(snap.hp) : enemy.hp;
+
+        let nextHpFromHost = Number.isFinite(Number(snap.hp)) ? Number(snap.hp) : enemy.hp;
+        const nowForPrediction = performance.now();
+        if (
+          Number.isFinite(Number(enemy._guestPredictedHp)) &&
+          Number(enemy._guestPredictedHpUntil || 0) > nowForPrediction
+        ) {
+          nextHpFromHost = Math.min(nextHpFromHost, Number(enemy._guestPredictedHp));
+        }
+        if (Number.isFinite(Number(snap.hp)) && Number(snap.hp) <= Number(enemy._guestPredictedHp ?? Infinity) + 0.001) {
+          enemy._guestPredictedHp = undefined;
+          enemy._guestPredictedHpUntil = 0;
+        }
+
+        enemy.hp = nextHpFromHost;
         enemy.maxHp = Number.isFinite(Number(snap.maxHp)) ? Number(snap.maxHp) : enemy.maxHp;
-        enemy.hpVisual = Number.isFinite(Number(snap.hpVisual)) ? Number(snap.hpVisual) : (enemy.hpVisual ?? enemy.hp);
+        enemy.hpVisual = Number.isFinite(Number(snap.hpVisual)) ? Math.min(Number(snap.hpVisual), enemy.hp) : (enemy.hpVisual ?? enemy.hp);
         enemy.color = snap.color || enemy.color;
         enemy.phase2 = !!snap.phase2;
         enemy.shieldHp = Number.isFinite(Number(snap.shieldHp)) ? Number(snap.shieldHp) : (enemy.shieldHp || 0);
         enemy.shieldMaxHp = Number.isFinite(Number(snap.shieldMaxHp)) ? Number(snap.shieldMaxHp) : (enemy.shieldMaxHp || 0);
+
+        const hostHitFlash = Number.isFinite(Number(snap.hitFlash)) ? Number(snap.hitFlash) : 0;
+        if (hostHitFlash > 0) {
+          enemy.hitFlash = Math.max(enemy.hitFlash || 0, hostHitFlash);
+        }
+
+        const hpDroppedFromHost = !wasNewEnemy && Number.isFinite(prevHpForOnlineFeedback) && Number.isFinite(Number(snap.hp)) && Number(snap.hp) < prevHpForOnlineFeedback - 0.001;
+        const shieldDroppedFromHost = !wasNewEnemy && Number.isFinite(prevShieldForOnlineFeedback) && Number.isFinite(Number(snap.shieldHp)) && Number(snap.shieldHp) < prevShieldForOnlineFeedback - 0.001;
+        if (hpDroppedFromHost || shieldDroppedFromHost) {
+          const amount = Math.max(1, Math.round((hpDroppedFromHost ? prevHpForOnlineFeedback - Number(snap.hp) : prevShieldForOnlineFeedback - Number(snap.shieldHp)) * 10) / 10);
+          enemy.hitFlash = 1;
+          enemy.hpVisual = Math.min(enemy.hpVisual ?? enemy.hp, enemy.hp);
+          spawnHitParticles(enemy.x, enemy.y, "#42dfff", 8);
+          spawnFloatingText(`-${amount}`, enemy.x + (Math.random() - 0.5) * enemy.size * 0.35, enemy.y - enemy.size * 0.55, "#42dfff", 13);
+        }
 
         const numericKeys = [
           "pulseTimer", "pulseInterval", "rotationSpeed", "rayLength", "rayWidth",
@@ -7172,7 +7204,20 @@ if (player.stamina <= 0) return false;
           if (isOnlineGuest()) {
             const damage = applyPlayerDamageModifiers(p.damage || 1);
             sendOnlineEnemyHit(enemy, p, damage);
-            spawnHitParticles(p.x, p.y, p.precise ? "#ffffff" : "#00ff8c", 6);
+
+            // Feedback local inmediato para el invitado: el host sigue siendo la autoridad real,
+            // pero el disparo ya no se siente atrasado ni invisible en la pantalla del invitado.
+            const predictedHp = Math.max(0, (Number(enemy.hp) || 0) - damage);
+            enemy.hitFlash = 1;
+            enemy._guestPredictedHp = Number.isFinite(Number(enemy._guestPredictedHp))
+              ? Math.min(Number(enemy._guestPredictedHp), predictedHp)
+              : predictedHp;
+            enemy._guestPredictedHpUntil = performance.now() + 520;
+            enemy.hp = Math.min(Number(enemy.hp) || predictedHp, predictedHp);
+            enemy.hpVisual = Math.min(Number(enemy.hpVisual ?? enemy.hp) || predictedHp, predictedHp);
+
+            spawnHitParticles(p.x, p.y, p.precise ? "#ffffff" : "#00ff8c", 8);
+            spawnFloatingText(`-${damage}`, enemy.x + (Math.random() - 0.5) * enemy.size * 0.35, enemy.y - enemy.size * 0.55, p.precise ? "#ffffff" : "#00ff8c", p.precise ? 15 : 13);
             return true;
           }
 
