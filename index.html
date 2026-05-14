@@ -2446,17 +2446,20 @@
 
         enemy._onlineId = snap.id;
         enemy.type = snap.type || enemy.type;
-        enemy._netTargetX = Number.isFinite(wx) ? wx : enemy.x;
-        enemy._netTargetY = Number.isFinite(wy) ? wy : enemy.y;
-        enemy._netTargetRotation = Number.isFinite(Number(snap.rotation)) ? Number(snap.rotation) : (enemy.rotation || 0);
-        if (Number.isFinite(Number(snap.innerRotation))) enemy._netTargetInnerRotation = Number(snap.innerRotation);
 
-        if (wasNewEnemy) {
-          enemy.x = enemy._netTargetX;
-          enemy.y = enemy._netTargetY;
-          enemy.rotation = enemy._netTargetRotation;
-          if (Number.isFinite(Number(enemy._netTargetInnerRotation))) enemy.innerRotation = enemy._netTargetInnerRotation;
-        }
+        // FIX: en invitado, la interpolación anterior podía dejar enemigos/ataques desfasados
+        // o directamente sin actualizar. Volvemos a usar el snapshot del host como fuente real.
+        if (Number.isFinite(wx)) enemy.x = wx;
+        if (Number.isFinite(wy)) enemy.y = wy;
+        if (Number.isFinite(Number(snap.rotation))) enemy.rotation = Number(snap.rotation);
+        if (Number.isFinite(Number(snap.innerRotation))) enemy.innerRotation = Number(snap.innerRotation);
+
+        enemy._netTargetX = enemy.x;
+        enemy._netTargetY = enemy.y;
+        enemy._netTargetRotation = enemy.rotation || 0;
+        if (Number.isFinite(Number(enemy.innerRotation))) enemy._netTargetInnerRotation = enemy.innerRotation;
+
+        const prevPulseTimer = Number.isFinite(Number(enemy._guestLastPulseTimer)) ? Number(enemy._guestLastPulseTimer) : null;
 
         enemy.size = Number.isFinite(Number(snap.size)) ? Number(snap.size) : enemy.size;
         enemy.hp = Number.isFinite(Number(snap.hp)) ? Number(snap.hp) : enemy.hp;
@@ -2477,6 +2480,22 @@
         for (const key of numericKeys) {
           if (Number.isFinite(Number(snap[key]))) enemy[key] = Number(snap[key]);
         }
+
+        // Fallback visual/daño para invitado: si por latencia o por un snapshot vacío no llegó
+        // el array de pulserRings, detectamos el reinicio del temporizador del Pulser/MiniPulser
+        // y creamos el anillo localmente. Esto evita que el invitado quede inmortal o sin ver ataques.
+        if (
+          (enemy.type === "pulser" || enemy.type === "miniPulser" || enemy.type === "duopulser") &&
+          (!Array.isArray(msg.pulserRings) || msg.pulserRings.length === 0) &&
+          prevPulseTimer !== null &&
+          Number.isFinite(Number(enemy.pulseTimer)) &&
+          Number(enemy.pulseTimer) > prevPulseTimer + 0.45
+        ) {
+          if (enemy.type === "miniPulser") spawnMiniPulserRing(enemy.x, enemy.y);
+          else if (enemy.type === "duopulser") spawnDuopulserRing(enemy.x, enemy.y);
+          else spawnPulserRing(enemy.x, enemy.y);
+        }
+        if (Number.isFinite(Number(enemy.pulseTimer))) enemy._guestLastPulseTimer = Number(enemy.pulseTimer);
 
         next.push(enemy);
       }
@@ -5690,38 +5709,31 @@
     }
 
     function updateGuestSyncedEnemyVisuals(dt) {
-      const posAmount = Math.min(1, dt * 18);
-      const rotAmount = Math.min(1, dt * 10);
-
       for (const enemy of enemies) {
         enemy.hitFlash = Math.max(0, (enemy.hitFlash || 0) - dt * 4.2);
         enemy.hpVisual += (enemy.hp - enemy.hpVisual) * Math.min(1, dt * 14);
 
-        if (Number.isFinite(Number(enemy._netTargetX))) enemy.x = approachNumber(enemy.x, enemy._netTargetX, posAmount);
-        if (Number.isFinite(Number(enemy._netTargetY))) enemy.y = approachNumber(enemy.y, enemy._netTargetY, posAmount);
-
-        if (enemy.type === "drouber") {
-          // En invitado, el host manda la rotación real, pero la animación avanza localmente
-          // entre snapshots para que los rayos no vayan a saltitos.
-          enemy.rotation += (enemy.rotationSpeed || 0.702) * dt;
-          enemy.innerRotation -= (enemy.rotationSpeed || 0.702) * dt;
-          if (Number.isFinite(Number(enemy._netTargetRotation))) enemy.rotation = approachAngle(enemy.rotation, enemy._netTargetRotation, rotAmount);
-          if (Number.isFinite(Number(enemy._netTargetInnerRotation))) enemy.innerRotation = approachAngle(enemy.innerRotation || 0, enemy._netTargetInnerRotation, rotAmount);
-
-          // El Drouber no usa proyectiles ni rings: su daño es por rayos geométricos.
-          // Como el host no puede calcular esa colisión contra la pantalla del invitado con precisión,
-          // el invitado debe aplicar el daño localmente usando el enemigo sincronizado.
+        // Ya no movemos enemigos hacia targets interpolados: el host manda el estado real.
+        // Solo mantenemos animaciones locales que no cambian la autoridad del host.
+        if (enemy.type === "pulser" || enemy.type === "duopulser") {
+          enemy.rotation += dt * 0.75;
+        } else if (enemy.type === "miniPulser") {
+          enemy.rotation += dt * 1.15;
+        } else if (enemy.type === "drouber") {
+          updateDrouberEnemy(enemy, dt, false);
           if (game.waveState === "combat" && game.roomStartTimer <= 0 && !player.downed && !isPlayerDamageInvulnerable() && drouberRaysHitPlayer(enemy)) {
             damagePlayer();
           }
-          continue;
-        }
-
-        if (Number.isFinite(Number(enemy._netTargetRotation))) {
-          enemy.rotation = approachAngle(enemy.rotation || 0, enemy._netTargetRotation, Math.min(1, dt * 16));
-        }
-        if (Number.isFinite(Number(enemy._netTargetInnerRotation))) {
-          enemy.innerRotation = approachAngle(enemy.innerRotation || 0, enemy._netTargetInnerRotation, Math.min(1, dt * 16));
+        } else if (enemy.type === "shooter") {
+          updateShooterEnemy(enemy, dt, false);
+        } else if (enemy.type === "doupulser") {
+          updateDoupulserEnemy(enemy, dt, false);
+        } else if (enemy.type === "doupulserFinal") {
+          updateDoupulserFinalEnemy(enemy, dt, false);
+        } else if (enemy.type === "linebreaker") {
+          updateLinebreakerEnemy(enemy, dt, false);
+        } else if (enemy.type === "secretBoss") {
+          updateSecretBossEnemy(enemy, dt, false);
         }
       }
     }
