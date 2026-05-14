@@ -993,10 +993,12 @@
 
     bindTouchButton(touchRestartButton, () => {
       if (game.state === "menu") return;
-      if (isOnlineMatchActive() && game.state === "playing") {
-        requestOnlineGameOver("restart");
-      } else if ((game.state === "gameOver" || game.state === "fadeOut") && isOnlineMatchActive()) {
-        requestOnlineGameOverSkip();
+      if (isOnlineMatchActive()) {
+        if (game.state === "playing") {
+          if (isOnlineHost()) requestOnlineGameOver("restart");
+        } else if (game.state === "gameOver" || game.state === "fadeOut") {
+          requestOnlineGameOverSkip();
+        }
       } else {
         resetGame();
       }
@@ -1492,6 +1494,7 @@
 
       for (let i = pulserRings.length - 1; i >= 0; i--) {
         const ring = pulserRings[i];
+        updateSyncedRingInterpolation(ring, dt);
         ring.radius += ring.speed * dt;
         ring.life -= dt;
 
@@ -1514,6 +1517,7 @@
 
       for (let i = bossHazards.length - 1; i >= 0; i--) {
         const hazard = bossHazards[i];
+        updateSyncedHazardInterpolation(hazard, dt);
         hazard.timer = (hazard.timer || 0) + dt;
         if (hazard.type === "doupDroub") {
           hazard.rotation += (hazard.rotationSpeed || 0) * dt;
@@ -1685,6 +1689,36 @@
         enemy._onlineId = `e${onlineEnemyIdCounter++}`;
       }
       return enemy._onlineId;
+    }
+
+    function getOrCreateOnlineHazardId(hazard) {
+      if (!hazard._onlineId) {
+        hazard._onlineId = `h${onlineHazardIdCounter++}`;
+      }
+      return hazard._onlineId;
+    }
+
+    function getOrCreateOnlineRingId(ring) {
+      if (!ring._onlineId) {
+        ring._onlineId = `r${onlineRingIdCounter++}`;
+      }
+      return ring._onlineId;
+    }
+
+    function normalizeAngleDelta(delta) {
+      while (delta > Math.PI) delta -= Math.PI * 2;
+      while (delta < -Math.PI) delta += Math.PI * 2;
+      return delta;
+    }
+
+    function approachAngle(current, target, amount) {
+      return current + normalizeAngleDelta(target - current) * amount;
+    }
+
+    function approachNumber(current, target, amount) {
+      if (!Number.isFinite(Number(current))) return Number.isFinite(Number(target)) ? Number(target) : 0;
+      if (!Number.isFinite(Number(target))) return Number(current);
+      return Number(current) + (Number(target) - Number(current)) * amount;
     }
 
     function serializeOnlineEnemy(enemy) {
@@ -2147,6 +2181,7 @@
       const scale = Math.max(1, Math.min(rr.w || 1, rr.h || 1));
 
       return {
+        id: getOrCreateOnlineRingId(ring),
         x: pos.x,
         y: pos.y,
         radius: (ring.radius || 0) / scale,
@@ -2167,6 +2202,7 @@
       const scale = Math.max(1, Math.min(rr.w || 1, rr.h || 1));
 
       return {
+        _onlineId: snap.id || "",
         x: pos.x,
         y: pos.y,
         radius: (Number(snap.radius) || 0) * scale,
@@ -2183,7 +2219,7 @@
     }
 
     function serializeOnlineBossHazard(hazard) {
-      const out = { ...hazard };
+      const out = { ...hazard, id: getOrCreateOnlineHazardId(hazard) };
 
       if (Number.isFinite(Number(hazard.x)) && Number.isFinite(Number(hazard.y))) {
         const pos = normalizeRoomPoint(hazard.x, hazard.y);
@@ -2201,7 +2237,7 @@
     }
 
     function deserializeOnlineBossHazard(snap) {
-      const out = { ...snap };
+      const out = { ...snap, _onlineId: snap.id || "" };
 
       if (Number.isFinite(Number(snap.x)) && Number.isFinite(Number(snap.y))) {
         const pos = denormalizeRoomPoint(snap.x, snap.y);
@@ -2218,6 +2254,67 @@
       return out;
     }
 
+    function applySyncedRingSnapshot(existing, incoming) {
+      existing._onlineId = incoming._onlineId || existing._onlineId || "";
+      existing._netTargetX = incoming.x;
+      existing._netTargetY = incoming.y;
+      existing._netTargetRadius = incoming.radius;
+      existing.maxRadius = incoming.maxRadius;
+      existing.minRadius = incoming.minRadius;
+      existing.speed = incoming.speed;
+      existing.thickness = incoming.thickness;
+      existing.life = incoming.life;
+      existing.color = incoming.color;
+      existing.alpha = incoming.alpha;
+      existing.damagePlayerAmount = incoming.damagePlayerAmount;
+    }
+
+    function applySyncedHazardSnapshot(existing, incoming) {
+      existing._onlineId = incoming._onlineId || existing._onlineId || "";
+      existing.type = incoming.type || existing.type;
+      existing._netTargetX = Number.isFinite(Number(incoming.x)) ? Number(incoming.x) : existing.x;
+      existing._netTargetY = Number.isFinite(Number(incoming.y)) ? Number(incoming.y) : existing.y;
+      existing._netTargetRotation = Number.isFinite(Number(incoming.rotation)) ? Number(incoming.rotation) : existing.rotation;
+      existing._netTargetRadius = Number.isFinite(Number(incoming.radius)) ? Number(incoming.radius) : existing.radius;
+
+      if (incoming.type === "doupDroub") {
+        existing.color = incoming.color || existing.color;
+        existing.rotationSpeed = Number.isFinite(Number(incoming.rotationSpeed)) ? Number(incoming.rotationSpeed) : existing.rotationSpeed;
+        existing.rays = Number.isFinite(Number(incoming.rays)) ? Number(incoming.rays) : existing.rays;
+        existing.rayLength = Number.isFinite(Number(incoming.rayLength)) ? Number(incoming.rayLength) : existing.rayLength;
+        existing.rayWidth = Number.isFinite(Number(incoming.rayWidth)) ? Number(incoming.rayWidth) : existing.rayWidth;
+        existing.maxLife = Number.isFinite(Number(incoming.maxLife)) ? Number(incoming.maxLife) : existing.maxLife;
+        existing.fadeStart = Number.isFinite(Number(incoming.fadeStart)) ? Number(incoming.fadeStart) : existing.fadeStart;
+        existing.warningDuration = Number.isFinite(Number(incoming.warningDuration)) ? Number(incoming.warningDuration) : existing.warningDuration;
+        existing.warningTimer = Number.isFinite(Number(incoming.warningTimer)) ? Number(incoming.warningTimer) : existing.warningTimer;
+        existing.life = Number.isFinite(Number(incoming.life)) ? Number(incoming.life) : existing.life;
+        existing.active = !!incoming.active;
+        existing.hitTimer = Math.min(existing.hitTimer || 0, Number.isFinite(Number(incoming.hitTimer)) ? Number(incoming.hitTimer) : (existing.hitTimer || 0));
+        return;
+      }
+
+      Object.assign(existing, incoming);
+      existing._netTargetX = Number.isFinite(Number(incoming.x)) ? Number(incoming.x) : existing.x;
+      existing._netTargetY = Number.isFinite(Number(incoming.y)) ? Number(incoming.y) : existing.y;
+      existing._netTargetRotation = Number.isFinite(Number(incoming.rotation)) ? Number(incoming.rotation) : existing.rotation;
+      existing._netTargetRadius = Number.isFinite(Number(incoming.radius)) ? Number(incoming.radius) : existing.radius;
+    }
+
+    function updateSyncedRingInterpolation(ring, dt) {
+      const amount = Math.min(1, dt * 20);
+      if (Number.isFinite(Number(ring._netTargetX))) ring.x = approachNumber(ring.x, ring._netTargetX, amount);
+      if (Number.isFinite(Number(ring._netTargetY))) ring.y = approachNumber(ring.y, ring._netTargetY, amount);
+      if (Number.isFinite(Number(ring._netTargetRadius))) ring.radius = approachNumber(ring.radius, ring._netTargetRadius, amount);
+    }
+
+    function updateSyncedHazardInterpolation(hazard, dt) {
+      const amount = Math.min(1, dt * 18);
+      if (Number.isFinite(Number(hazard._netTargetX))) hazard.x = approachNumber(hazard.x, hazard._netTargetX, amount);
+      if (Number.isFinite(Number(hazard._netTargetY))) hazard.y = approachNumber(hazard.y, hazard._netTargetY, amount);
+      if (Number.isFinite(Number(hazard._netTargetRadius))) hazard.radius = approachNumber(hazard.radius, hazard._netTargetRadius, amount);
+      if (Number.isFinite(Number(hazard._netTargetRotation))) hazard.rotation = approachAngle(hazard.rotation || 0, hazard._netTargetRotation, Math.min(1, dt * 12));
+    }
+
     function syncGuestHostileAttacksFromSnapshot(msg) {
       if (!isOnlineGuest()) return;
 
@@ -2225,8 +2322,7 @@
       const rings = Array.isArray(msg.pulserRings) ? msg.pulserRings : [];
       const hazards = Array.isArray(msg.bossHazards) ? msg.bossHazards : [];
 
-      // En el invitado, los proyectiles enemigos vienen del host.
-      // Se reemplazan para evitar duplicados/fantasmas.
+      // Los proyectiles simples se siguen reemplazando porque duran poco.
       for (let i = projectiles.length - 1; i >= 0; i--) {
         if (projectiles[i].enemyProjectile) projectiles.splice(i, 1);
       }
@@ -2234,15 +2330,42 @@
         projectiles.push(deserializeOnlineHostileProjectile(snap));
       }
 
-      pulserRings.length = 0;
+      const ringById = new Map(pulserRings.map(r => [r._onlineId, r]).filter(([id]) => !!id));
+      const nextRings = [];
       for (const snap of rings) {
-        pulserRings.push(deserializeOnlinePulserRing(snap));
+        const incoming = deserializeOnlinePulserRing(snap);
+        const existing = incoming._onlineId ? ringById.get(incoming._onlineId) : null;
+        if (existing) {
+          applySyncedRingSnapshot(existing, incoming);
+          nextRings.push(existing);
+        } else {
+          incoming._netTargetX = incoming.x;
+          incoming._netTargetY = incoming.y;
+          incoming._netTargetRadius = incoming.radius;
+          nextRings.push(incoming);
+        }
       }
+      pulserRings.length = 0;
+      pulserRings.push(...nextRings);
 
-      bossHazards.length = 0;
+      const hazardById = new Map(bossHazards.map(h => [h._onlineId, h]).filter(([id]) => !!id));
+      const nextHazards = [];
       for (const snap of hazards) {
-        bossHazards.push(deserializeOnlineBossHazard(snap));
+        const incoming = deserializeOnlineBossHazard(snap);
+        const existing = incoming._onlineId ? hazardById.get(incoming._onlineId) : null;
+        if (existing && existing.type === incoming.type) {
+          applySyncedHazardSnapshot(existing, incoming);
+          nextHazards.push(existing);
+        } else {
+          incoming._netTargetX = incoming.x;
+          incoming._netTargetY = incoming.y;
+          incoming._netTargetRotation = incoming.rotation;
+          incoming._netTargetRadius = incoming.radius;
+          nextHazards.push(incoming);
+        }
       }
+      bossHazards.length = 0;
+      bossHazards.push(...nextHazards);
     }
 
     function sendOnlineEnemySnapshot(dt) {
@@ -2343,26 +2466,36 @@
         const wx = rr.x + Number(snap.x) * rr.w;
         const wy = rr.y + Number(snap.y) * rr.h;
 
+        const wasNewEnemy = !enemy;
         if (!enemy) {
           enemy = createEnemyFromOnlineSnapshot(snap, wx, wy);
         }
 
         enemy._onlineId = snap.id;
         enemy.type = snap.type || enemy.type;
-        enemy.x = Number.isFinite(wx) ? wx : enemy.x;
-        enemy.y = Number.isFinite(wy) ? wy : enemy.y;
+        enemy._netTargetX = Number.isFinite(wx) ? wx : enemy.x;
+        enemy._netTargetY = Number.isFinite(wy) ? wy : enemy.y;
+        enemy._netTargetRotation = Number.isFinite(Number(snap.rotation)) ? Number(snap.rotation) : (enemy.rotation || 0);
+        if (Number.isFinite(Number(snap.innerRotation))) enemy._netTargetInnerRotation = Number(snap.innerRotation);
+
+        if (wasNewEnemy) {
+          enemy.x = enemy._netTargetX;
+          enemy.y = enemy._netTargetY;
+          enemy.rotation = enemy._netTargetRotation;
+          if (Number.isFinite(Number(enemy._netTargetInnerRotation))) enemy.innerRotation = enemy._netTargetInnerRotation;
+        }
+
         enemy.size = Number.isFinite(Number(snap.size)) ? Number(snap.size) : enemy.size;
         enemy.hp = Number.isFinite(Number(snap.hp)) ? Number(snap.hp) : enemy.hp;
         enemy.maxHp = Number.isFinite(Number(snap.maxHp)) ? Number(snap.maxHp) : enemy.maxHp;
         enemy.hpVisual = Number.isFinite(Number(snap.hpVisual)) ? Number(snap.hpVisual) : (enemy.hpVisual ?? enemy.hp);
-        enemy.rotation = Number.isFinite(Number(snap.rotation)) ? Number(snap.rotation) : (enemy.rotation || 0);
         enemy.color = snap.color || enemy.color;
         enemy.phase2 = !!snap.phase2;
         enemy.shieldHp = Number.isFinite(Number(snap.shieldHp)) ? Number(snap.shieldHp) : (enemy.shieldHp || 0);
         enemy.shieldMaxHp = Number.isFinite(Number(snap.shieldMaxHp)) ? Number(snap.shieldMaxHp) : (enemy.shieldMaxHp || 0);
 
         const numericKeys = [
-          "pulseTimer", "pulseInterval", "innerRotation", "rotationSpeed", "rayLength", "rayWidth",
+          "pulseTimer", "pulseInterval", "rotationSpeed", "rayLength", "rayWidth",
           "attackTimer", "attackCooldown", "attackLockTimer", "moveTime", "shieldTimer", "shieldInterval",
           "preferredDistance", "minDistance", "maxDistance", "strafeDir", "strafeSwapTimer",
           "baseX", "baseY", "shootTimer", "shootInterval"
@@ -3061,8 +3194,10 @@
       }
 
       if (e.key.toLowerCase() === "r") {
-        if (isOnlineMatchActive() && game.state === "playing") {
-          requestOnlineGameOver("restart");
+        if (isOnlineMatchActive()) {
+          if (game.state === "playing" && isOnlineHost()) {
+            requestOnlineGameOver("restart");
+          }
         } else {
           resetGame();
         }
@@ -5581,6 +5716,36 @@
       return damage;
     }
 
+    function updateGuestSyncedEnemyVisuals(dt) {
+      const posAmount = Math.min(1, dt * 18);
+      const rotAmount = Math.min(1, dt * 10);
+
+      for (const enemy of enemies) {
+        enemy.hitFlash = Math.max(0, (enemy.hitFlash || 0) - dt * 4.2);
+        enemy.hpVisual += (enemy.hp - enemy.hpVisual) * Math.min(1, dt * 14);
+
+        if (Number.isFinite(Number(enemy._netTargetX))) enemy.x = approachNumber(enemy.x, enemy._netTargetX, posAmount);
+        if (Number.isFinite(Number(enemy._netTargetY))) enemy.y = approachNumber(enemy.y, enemy._netTargetY, posAmount);
+
+        if (enemy.type === "drouber") {
+          // En invitado, el host manda la rotación real, pero la animación avanza localmente
+          // entre snapshots para que los rayos no vayan a saltitos.
+          enemy.rotation += (enemy.rotationSpeed || 0.702) * dt;
+          enemy.innerRotation -= (enemy.rotationSpeed || 0.702) * dt;
+          if (Number.isFinite(Number(enemy._netTargetRotation))) enemy.rotation = approachAngle(enemy.rotation, enemy._netTargetRotation, rotAmount);
+          if (Number.isFinite(Number(enemy._netTargetInnerRotation))) enemy.innerRotation = approachAngle(enemy.innerRotation || 0, enemy._netTargetInnerRotation, rotAmount);
+          continue;
+        }
+
+        if (Number.isFinite(Number(enemy._netTargetRotation))) {
+          enemy.rotation = approachAngle(enemy.rotation || 0, enemy._netTargetRotation, Math.min(1, dt * 16));
+        }
+        if (Number.isFinite(Number(enemy._netTargetInnerRotation))) {
+          enemy.innerRotation = approachAngle(enemy.innerRotation || 0, enemy._netTargetInnerRotation, Math.min(1, dt * 16));
+        }
+      }
+    }
+
     function updateEnemies(dt) {
       if (game.roomStartTimer > 0 || game.waveState !== "combat") {
         for (const enemy of enemies) {
@@ -6528,6 +6693,7 @@
     function updatePulserRings(dt) {
       for (let i = pulserRings.length - 1; i >= 0; i--) {
         const ring = pulserRings[i];
+        updateSyncedRingInterpolation(ring, dt);
         ring.radius += ring.speed * dt;
         ring.life -= dt;
 
@@ -7234,10 +7400,7 @@ if (player.stamina <= 0) return false;
           // Invitado online: enemigos/oleada vienen del host por WebSocket.
           // Pero el jugador invitado SÍ puede disparar, actualizar sus propias balas
           // y ver partículas de impacto de forma local.
-          for (const enemy of enemies) {
-            enemy.hitFlash = Math.max(0, (enemy.hitFlash || 0) - dt * 4.2);
-            enemy.hpVisual += (enemy.hp - enemy.hpVisual) * Math.min(1, dt * 14);
-          }
+          updateGuestSyncedEnemyVisuals(dt);
 
           if (game.roomStartTimer <= 0 && game.waveState === "combat") {
             updateShooting(dt);
