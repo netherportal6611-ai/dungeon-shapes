@@ -1563,6 +1563,34 @@
       return isOnlineMatchActive() && onlineRoom.playerId === "p2";
     }
 
+    function getRemoteOnlinePlayer() {
+      if (!isOnlineMatchActive() || !onlineRoom.players || !onlineRoom.playerId) return null;
+      const remoteId = onlineRoom.playerId === "p1" ? "p2" : "p1";
+      const remote = onlineRoom.players[remoteId];
+      return remote && remote.connected ? remote : null;
+    }
+
+    function isOnlineCoopXPChoiceBlocking() {
+      if (!isOnlineMatchActive() || game.state !== "playing") return false;
+      const remote = getRemoteOnlinePlayer();
+      return !!game.xpChoiceOpen || !!(remote && remote.xpChoiceOpen);
+    }
+
+    function isOnlineCoopOrbBlocking() {
+      if (!isOnlineMatchActive() || game.state !== "playing") return false;
+      if (game.waveState !== "intermission") return false;
+      const remote = getRemoteOnlinePlayer();
+      return !!game.upgradePickup || !!game.upgradeShopOpen || !!(remote && remote.orbBlocking);
+    }
+
+    function isOnlineCoopPauseBlocking() {
+      return isOnlineCoopXPChoiceBlocking() || isOnlineCoopOrbBlocking();
+    }
+
+    function sendOnlineLocalChoiceStateNow() {
+      sendOnlinePlayerStateNow();
+    }
+
     function shouldRunLocalEnemySimulation() {
       // Offline: el juego funciona igual que siempre.
       // Online: solo el host simula enemigos/oleadas; el invitado recibe snapshots.
@@ -1692,12 +1720,21 @@
       }
     }
 
-    function addSharedKillPointsOnly(enemy) {
+    function addSharedKillRewards(enemy) {
       const reward = getEnemyPointReward(enemy);
       if (reward > 0) {
         game.points += reward;
         game.pointsPulse = 1;
         game.pointsPulseValue = reward;
+      }
+
+      const xp = getEnemyXPReward(enemy);
+      if (xp > 0) {
+        game.xp += xp;
+        game.xpPulse = Math.max(game.xpPulse || 0, 1);
+        while (!game.xpChoiceOpen && game.xp >= game.xpRequired) {
+          openXPChoiceUI();
+        }
       }
     }
 
@@ -1787,7 +1824,7 @@
           addEnemyKillPoints(enemy);
         } else {
           // Kill del invitado: invitado recibe puntos+XP, host recibe solo puntos compartidos.
-          addSharedKillPointsOnly(enemy);
+          addSharedKillRewards(enemy);
           sendOnlinePlayerReward(killerId, enemy, true);
         }
 
@@ -1825,18 +1862,11 @@
       player.downed = false;
       player.hp = Math.max(1, player.hp || 0);
       player.invincible = true;
-      player.hitTimer = 1.0;
+      player.hitTimer = 3.5;
       spawnLifePulse(0);
       spawnFloatingText("REVIVIDO", player.x, player.y - 42, "#00ffbb", 16);
       triggerRoomPulse("#00ffbb", 0.54);
       triggerScreenShake(3.5, 0.12);
-
-      setTimeout(() => {
-        if (game.state === "playing" && !player.downed && player.dashTimer <= 0 && player.dashGraceTimer <= 0) {
-          player.invincible = false;
-          player.wasDashing = false;
-        }
-      }, 850);
 
       sendOnlinePlayerStateNow();
     }
@@ -1873,7 +1903,9 @@
           dash: false,
           shoot: false,
           special: false,
-          skipVoteWave: onlineIntermissionSkip.localRequested ? Number(onlineIntermissionSkip.wave || game.wave) : 0
+          skipVoteWave: onlineIntermissionSkip.localRequested ? Number(onlineIntermissionSkip.wave || game.wave) : 0,
+          xpChoiceOpen: !!game.xpChoiceOpen,
+          orbBlocking: !!(game.waveState === "intermission" && (game.upgradePickup || game.upgradeShopOpen))
         }));
       } catch {}
     }
@@ -2375,7 +2407,9 @@
           dash: !player.downed && player.dashTimer > 0,
           shoot: !player.downed && (!!mouse.down || !!mobileInput.rightFire),
           special: !player.downed && (!!mouse.rightDown || !!mobileInput.leftFire),
-          skipVoteWave: onlineIntermissionSkip.localRequested ? Number(onlineIntermissionSkip.wave || game.wave) : 0
+          skipVoteWave: onlineIntermissionSkip.localRequested ? Number(onlineIntermissionSkip.wave || game.wave) : 0,
+          xpChoiceOpen: !!game.xpChoiceOpen,
+          orbBlocking: !!(game.waveState === "intermission" && (game.upgradePickup || game.upgradeShopOpen))
         }));
       } catch {}
     }
@@ -3957,6 +3991,7 @@
       game.upgradePickup = null;
       game.upgradeShopOpen = false;
       game.upgradeShopMessageTimer = 0;
+      sendOnlineLocalChoiceStateNow();
     }
 
     function spawnHealPickup(mode = "preDoupulser") {
@@ -4052,6 +4087,7 @@
       mouse.down = false;
       game.shootTimer = 0;
       game.upgradeShopMessageTimer = 0;
+      sendOnlineLocalChoiceStateNow();
     }
 
     function getUpgradeShopButtonRects() {
@@ -4109,7 +4145,7 @@
         if (pointInRect(x, y, buttons.ignore)) {
           clearUpgradePickup();
           game.waveFlashTimer = game.waveFlashDuration;
-          if (!isOnlineGuest()) startWave(config.nextWave);
+          if (!isOnlineMatchActive()) startWave(config.nextWave);
           return true;
         }
 
@@ -4124,7 +4160,7 @@
       if (pointInRect(x, y, buttons.ignore)) {
         clearUpgradePickup();
         game.waveFlashTimer = game.waveFlashDuration;
-        if (!isOnlineGuest()) startWave(config.nextWave);
+        if (!isOnlineMatchActive()) startWave(config.nextWave);
         return true;
       }
 
@@ -4162,7 +4198,7 @@
 
       clearUpgradePickup();
       game.waveFlashTimer = game.waveFlashDuration;
-      if (!isOnlineGuest()) startWave(config.nextWave);
+      if (!isOnlineMatchActive()) startWave(config.nextWave);
       return true;
     }
 
@@ -4399,6 +4435,11 @@
           player.invincible = false;
           player.wasDashing = false;
         }
+      }
+
+      if (player.hitTimer <= 0 && player.dashTimer <= 0 && player.dashGraceTimer <= 0 && !player.downed) {
+        player.invincible = false;
+        player.wasDashing = false;
       }
 
       if (player.dashTimer > 0) {
@@ -4643,7 +4684,17 @@
       dashBursts.length = 0;
       game.pointsVisual = 0;
       game.pointsPulse = 0;
-      startWave(1);
+      if (isOnlineMatchActive()) {
+        game.wave = 0;
+        game.waveState = "intermission";
+        game.intermissionTimer = 5;
+        game.roomStartTimer = 0;
+        resetOnlineIntermissionSkipVotes(0);
+        showWaveBanner("PREPARACIÓN", "oleada 1 en 5 segundos");
+        triggerRoomPulse("#42dfff", 0.46);
+      } else {
+        startWave(1);
+      }
     }
 
     function resetGame() {
@@ -4695,7 +4746,17 @@
       dashBursts.length = 0;
       game.pointsVisual = 0;
       game.pointsPulse = 0;
-      startWave(1);
+      if (isOnlineMatchActive()) {
+        game.wave = 0;
+        game.waveState = "intermission";
+        game.intermissionTimer = 5;
+        game.roomStartTimer = 0;
+        resetOnlineIntermissionSkipVotes(0);
+        showWaveBanner("PREPARACIÓN", "oleada 1 en 5 segundos");
+        triggerRoomPulse("#42dfff", 0.46);
+      } else {
+        startWave(1);
+      }
     }
 
     function isBossWaveNumber(waveNumber) {
@@ -4704,6 +4765,19 @@
 
     function currentCombatWaveHasBoss() {
       return game.waveState === "combat" && isBossWaveNumber(game.wave);
+    }
+
+    function applyMultiplayerEnemyHpScaling() {
+      if (!isOnlineMatchActive()) return;
+      for (const enemy of enemies) {
+        if (!enemy || enemy._mpHpScaled) continue;
+        enemy._mpHpScaled = true;
+        enemy.hp = Math.ceil((Number(enemy.hp) || 1) * 1.5);
+        enemy.maxHp = Math.ceil((Number(enemy.maxHp) || enemy.hp || 1) * 1.5);
+        enemy.hpVisual = enemy.hp;
+        if (enemy.shieldHp) enemy.shieldHp = Math.ceil(enemy.shieldHp * 1.5);
+        if (enemy.shieldMaxHp) enemy.shieldMaxHp = Math.ceil(enemy.shieldMaxHp * 1.5);
+      }
     }
 
     function startWave(waveNumber) {
@@ -4725,6 +4799,7 @@
       showWaveBanner(`OLEADA ${waveNumber}`, bossWave ? (waveNumber === 10 || waveNumber === 20 || waveNumber === 2000 ? "boss" : "miniboss") : "preparate");
       triggerRoomPulse(bossWave ? game.ruby : "#42dfff", bossWave ? 0.62 : 0.46);
       spawnWaveEnemies(waveNumber);
+      applyMultiplayerEnemyHpScaling();
       if (isOnlineHost()) enemies.forEach(getOrCreateOnlineEnemyId);
       markEnemySpawns();
     }
@@ -5032,7 +5107,7 @@
       if (game.waveState === "intermission") {
         // Si hay una orbe de compra post-boss, la intermisión queda pausada
         // hasta comprar o ignorar para que no se pierda la recompensa.
-        if (game.upgradePickup || game.upgradeShopOpen) {
+        if (game.upgradePickup || game.upgradeShopOpen || isOnlineCoopOrbBlocking()) {
           return;
         }
 
@@ -5186,10 +5261,10 @@
         game.pointsPulseValue = reward;
       }
 
-      // Online: la ganancia de PUNTOS es compartida, pero el gasto sigue siendo local.
-      // La XP se queda para quien hizo la kill.
+      // Online: puntos y XP se ganan de forma compartida.
+      // El gasto de puntos y la elección de mejoras siguen siendo locales/separados.
       if (isOnlineHost()) {
-        sendOnlinePlayerReward("p2", enemy, false);
+        sendOnlinePlayerReward("p2", enemy, true);
       }
 
       grantEnemyXP(enemy);
@@ -5346,6 +5421,7 @@
       mouse.down = false;
       mouse.rightDown = false;
       clearInputs();
+      sendOnlineLocalChoiceStateNow();
     }
 
     function chooseXPUpgrade(index) {
@@ -5364,6 +5440,7 @@
       game.xpRequired = Math.round(game.xpRequired * 1.5 * 10) / 10;
       game.xpChoiceOpen = false;
       game.xpChoices = [];
+      sendOnlineLocalChoiceStateNow();
       showWaveBanner(upgrade.title.toUpperCase(), "mejora elegida");
       triggerRoomPulse("#00ffbb", 0.55);
 
@@ -6284,6 +6361,7 @@
     }
 
     function useCuradorAbility() {
+      if (player.downed) return false;
       if (!game.hasCurador) return false;
       if (game.state !== "playing" || game.settingsOpen || game.upgradeShopOpen) return false;
       if (game.waveState !== "combat" || game.roomStartTimer > 0) return false;
@@ -6303,6 +6381,7 @@
     }
 
     function usePulsadorAbility() {
+      if (player.downed) return false;
       if (!game.hasPulsador) return false;
       if (game.state !== "playing" || game.settingsOpen || game.upgradeShopOpen) return false;
       if (game.waveState !== "combat" || game.roomStartTimer > 0) return false;
@@ -6504,7 +6583,8 @@
     }
 
     function shootProjectile() {
-      if (player.stamina <= 0) return false;
+            if (player.downed) return false;
+if (player.stamina <= 0) return false;
 
       const shotCost = getShootStaminaCost();
       const cost = player.stamina >= shotCost
@@ -6540,6 +6620,7 @@
     }
 
     function shootPreciseProjectile() {
+      if (player.downed) return false;
       if (player.stamina <= 0) return false;
 
       const shotCost = getShootStaminaCost();
@@ -6580,6 +6661,7 @@
     }
 
     function shootPreciseSingleShot(slot = "left") {
+      if (player.downed) return false;
       if (game.state !== "playing" || game.settingsOpen || game.upgradeShopOpen) return false;
       if (game.waveState !== "combat" || game.roomStartTimer > 0) return false;
       if (game.preciseShotCooldown > 0) return false;
@@ -6658,6 +6740,7 @@
     }
 
     function shootMultiShotBurst() {
+      if (player.downed) return false;
       if (game.weaponMode !== "multiShot") return false;
       if (game.state !== "playing" || game.settingsOpen || game.upgradeShopOpen) return false;
       if (game.waveState !== "combat" || game.roomStartTimer > 0) return false;
@@ -6996,7 +7079,7 @@
       if (game.state === "playing" && game.xpChoiceOpen) {
         mouse.down = false;
         mouse.rightDown = false;
-      } else if (game.state === "playing" && !game.settingsOpen && !game.upgradeShopOpen) {
+      } else if (game.state === "playing" && !game.settingsOpen && !game.upgradeShopOpen && !isOnlineCoopPauseBlocking()) {
         updateMobileAimTarget();
         if (!player.downed) {
           if (mobileInput.leftFire) mouse.down = true;
@@ -7041,6 +7124,10 @@
         }
       } else if (game.state === "playing" && game.upgradeShopOpen) {
         updateUpgradePickup(dt);
+      } else if (game.state === "playing" && isOnlineCoopPauseBlocking()) {
+        mouse.down = false;
+        mouse.rightDown = false;
+        updateOnlineRevive(dt);
       }
 
       if (game.state === "gameOver") {
