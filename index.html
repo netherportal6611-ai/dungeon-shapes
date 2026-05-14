@@ -576,6 +576,7 @@
     .auth-status.error{color:#ff5572}.auth-status.ok{color:#00ffbb}
     #auth-user-badge{position:fixed;left:18px;bottom:18px;z-index:42;display:none;align-items:center;gap:10px;height:38px;max-width:min(420px,calc(100vw - 36px));padding:0 12px;border:2px solid rgba(236,0,116,.72);border-radius:15px;background:rgba(7,8,14,.92);color:rgba(255,255,255,.86);font:900 11px Inter,"Segoe UI",Arial,sans-serif;letter-spacing:.04em;text-transform:uppercase;pointer-events:auto}
     #auth-user-badge.visible{display:flex}
+    body.gameplay-active #auth-user-badge{display:none!important}
     #auth-logout-btn{height:24px;padding:0 9px;border:1.5px solid rgba(236,0,116,.88);border-radius:10px;background:transparent;color:white;font:900 10px Inter,"Segoe UI",Arial,sans-serif;cursor:pointer}
 
   </style>
@@ -759,6 +760,8 @@
       document.body.classList.toggle("mobile-gameplay", mobileReady && g.state !== "menu");
       document.body.classList.toggle("mobile-settings-open", mobileReady && g.settingsOpen);
       document.body.classList.toggle("settings-panel-open", ready && !!g.settingsOpen);
+      document.body.classList.toggle("menu-active", ready && g.state === "menu");
+      document.body.classList.toggle("gameplay-active", ready && g.state !== "menu");
       document.body.classList.toggle("game-over-screen", ready && (g.state === "gameOver" || g.state === "fadeOut"));
     }
 
@@ -8319,30 +8322,17 @@
     function getMenuRoomPanelRect() {
       const portrait = isPortraitMenuLayout();
       const compactLandscape = isCompactLandscapeMenuLayout();
-      const left = getMenuLeftPanelRect();
 
-      if (portrait) return left;
+      if (portrait) {
+        const w = Math.min(canvas.width - 28, 470);
+        const h = Math.min(canvas.height - 36, 440);
+        return { x: canvas.width / 2 - w / 2, y: canvas.height / 2 - h / 2, w, h };
+      }
 
-      const margin = compactLandscape ? 18 : 34;
-      const gap = compactLandscape ? 26 : 48;
-      const availableX = left.x + left.w + gap;
-      const availableW = canvas.width - availableX - margin;
-
-      // Antes este panel podía ocupar casi toda la derecha y dejaba la UI perdida/estirada.
-      // Ahora mantiene un ancho real de lobby y se centra dentro del espacio disponible.
-      const maxW = compactLandscape ? 620 : 760;
-      const minW = compactLandscape ? 470 : 520;
-      const w = Math.max(Math.min(maxW, availableW), Math.min(minW, availableW));
-      const x = availableX + Math.max(0, (availableW - w) / 2);
-
-      const h = compactLandscape ? Math.min(canvas.height - 34, 360) : Math.min(520, Math.max(450, canvas.height * 0.56));
-
-      return {
-        x,
-        y: canvas.height / 2 - h / 2,
-        w,
-        h,
-      };
+      const margin = compactLandscape ? 28 : 52;
+      const w = Math.min(canvas.width - margin * 2, compactLandscape ? 560 : 680);
+      const h = Math.min(canvas.height - margin * 2, compactLandscape ? 430 : 560);
+      return { x: canvas.width / 2 - w / 2, y: canvas.height / 2 - h / 2, w, h };
     }
 
     function getMenuButtonRects() {
@@ -8697,10 +8687,10 @@
       const panel = getMenuRoomPanelRect();
       const portrait = isPortraitMenuLayout();
       const compactLandscape = isCompactLandscapeMenuLayout();
-      const w = portrait ? Math.min(panel.w - 52, 300) : (compactLandscape ? Math.min(panel.w - 60, 260) : Math.min(340, panel.w - 96));
-      const h = portrait ? 44 : (compactLandscape ? 38 : 52);
-      const x = panel.x + (portrait ? panel.w / 2 - w / 2 : 46);
-      const y = portrait ? panel.y + panel.h - h - 28 : panel.y + panel.h - h - (compactLandscape ? 28 : 54);
+      const w = portrait ? Math.min(panel.w - 64, 340) : Math.min(panel.w - 120, compactLandscape ? 360 : 420);
+      const h = portrait ? 48 : (compactLandscape ? 44 : 54);
+      const x = panel.x + panel.w / 2 - w / 2;
+      const y = panel.y + panel.h - h - (portrait ? 34 : compactLandscape ? 34 : 48);
       return { cancel: { x, y, w, h } };
     }
 
@@ -8708,15 +8698,12 @@
       const panel = getMenuRoomPanelRect();
       const portrait = isPortraitMenuLayout();
       const compactLandscape = isCompactLandscapeMenuLayout();
-      const w = portrait ? Math.min(panel.w - 52, 300) : (compactLandscape ? Math.min(panel.w - 84, 300) : Math.min(340, panel.w - 96));
-      const h = portrait ? 42 : (compactLandscape ? 38 : 48);
-      const gap = portrait ? 10 : 12;
-      const x = panel.x + (portrait ? panel.w / 2 - w / 2 : 56);
-      const y = panel.y + panel.h - h * 2 - gap - (portrait ? 28 : compactLandscape ? 26 : 42);
-      return {
-        start: { x, y, w, h },
-        cancel: { x, y: y + h + gap, w, h },
-      };
+      const w = portrait ? Math.min(panel.w - 64, 340) : Math.min(panel.w - 124, compactLandscape ? 390 : 460);
+      const h = portrait ? 46 : (compactLandscape ? 44 : 52);
+      const gap = portrait ? 12 : 16;
+      const x = panel.x + panel.w / 2 - w / 2;
+      const y = panel.y + panel.h - h * 2 - gap - (portrait ? 34 : compactLandscape ? 34 : 48);
+      return { start: { x, y, w, h }, cancel: { x, y: y + h + gap, w, h } };
     }
 
     function syncRoomCodeBox() {
@@ -8725,14 +8712,13 @@
         roomCodeBox.style.display = "none";
         return;
       }
-
       const panel = getMenuRoomPanelRect();
       const portrait = isPortraitMenuLayout();
       const compactLandscape = isCompactLandscapeMenuLayout();
-      const w = portrait ? Math.min(panel.w - 52, 300) : (compactLandscape ? Math.min(panel.w - 70, 320) : Math.min(panel.w - 96, 420));
-      const inputW = Math.min(180, Math.max(132, w * 0.44));
-      const y = portrait ? panel.y + 184 : panel.y + (compactLandscape ? 172 : 254);
-      const x = portrait ? panel.x + panel.w / 2 - w / 2 : panel.x + 46;
+      const w = portrait ? Math.min(panel.w - 64, 340) : Math.min(panel.w - 130, compactLandscape ? 390 : 460);
+      const inputW = Math.min(210, Math.max(150, w * 0.48));
+      const y = panel.y + (portrait ? 198 : compactLandscape ? 206 : 282);
+      const x = panel.x + panel.w / 2 - w / 2;
       const rect = canvas.getBoundingClientRect();
       const sx = rect.width / Math.max(1, canvas.width);
       const sy = rect.height / Math.max(1, canvas.height);
@@ -9148,30 +9134,27 @@
       syncRoomCodeBox();
       const portrait = isPortraitMenuLayout();
       const compactLandscape = isCompactLandscapeMenuLayout();
-      const center = portrait;
-      const titleX = center ? panel.x + panel.w / 2 : panel.x + 56;
-      const titleY = panel.y + (center ? 58 : compactLandscape ? 62 : 84);
+      const titleX = panel.x + panel.w / 2;
+      const titleY = panel.y + (portrait ? 74 : compactLandscape ? 76 : 104);
 
       ctx.save();
-      ctx.textAlign = center ? "center" : "left";
+      ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      drawMenuSectionLabel("ROOM CODE", titleX + (center ? 0 : 2), titleY - 34, center ? "center" : "left", "#42dfff");
-      ctx.font = `950 ${center ? 31 : compactLandscape ? 34 : 44}px Inter, Segoe UI, Arial, sans-serif`;
+      drawMenuSectionLabel("ROOM CODE", titleX, titleY - 36, "center", "#42dfff");
+      ctx.font = `950 ${portrait ? 34 : compactLandscape ? 40 : 52}px Inter, Segoe UI, Arial, sans-serif`;
       ctx.fillStyle = "rgba(255,255,255,0.97)";
       ctx.fillText("UNIRSE", titleX, titleY);
       ctx.fillStyle = game.ruby;
-      ctx.fillText("A SALA", titleX, titleY + (center ? 38 : compactLandscape ? 36 : 48));
+      ctx.fillText("A SALA", titleX, titleY + (portrait ? 42 : compactLandscape ? 46 : 58));
       ctx.font = "850 12px Inter, Segoe UI, Arial, sans-serif";
       ctx.fillStyle = "rgba(255,255,255,0.50)";
-      ctx.fillText("Pedile el código al host y entrá al lobby", titleX + (center ? 0 : 2), titleY + (center ? 78 : compactLandscape ? 76 : 90));
-
+      ctx.fillText("Pedile el código al host y entrá al lobby", titleX, titleY + (portrait ? 88 : compactLandscape ? 98 : 122));
       if (game.multiplayer.joinError) {
         ctx.font = "900 12px Inter, Segoe UI, Arial, sans-serif";
         ctx.fillStyle = "#ff5572";
-        ctx.fillText(game.multiplayer.joinError, titleX + (center ? 0 : 2), panel.y + (center ? 262 : compactLandscape ? 230 : 326));
+        ctx.fillText(game.multiplayer.joinError, titleX, panel.y + panel.h - (portrait ? 92 : 108));
       }
       ctx.restore();
-
       const b = getJoinRoomButtonRects();
       drawMenuButton(b.cancel, "CANCELAR", false);
     }
@@ -9181,43 +9164,31 @@
       const mp = game.multiplayer;
       const portrait = isPortraitMenuLayout();
       const compactLandscape = isCompactLandscapeMenuLayout();
-      const center = portrait;
-      const padX = portrait ? 0 : 58;
-      const titleX = center ? panel.x + panel.w / 2 : panel.x + padX;
-      const titleY = panel.y + (center ? 48 : compactLandscape ? 50 : 64);
+      const titleX = panel.x + panel.w / 2;
+      const titleY = panel.y + (portrait ? 64 : compactLandscape ? 66 : 88);
 
       ctx.save();
-      ctx.textAlign = center ? "center" : "left";
+      ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      drawMenuSectionLabel(mp.isHost ? "HOST LOBBY" : "GUEST LOBBY", titleX, titleY - 26, center ? "center" : "left", "#42dfff");
+      drawMenuSectionLabel(mp.isHost ? "HOST LOBBY" : "GUEST LOBBY", titleX, titleY - 30, "center", "#42dfff");
       ctx.font = "900 11px Inter, Segoe UI, Arial, sans-serif";
       ctx.fillStyle = "rgba(255,255,255,0.48)";
       ctx.fillText("CÓDIGO DE SALA", titleX, titleY);
-
-      ctx.font = `950 ${center ? 42 : compactLandscape ? 44 : 56}px Inter, Segoe UI, Arial, sans-serif`;
+      ctx.font = `950 ${portrait ? 46 : compactLandscape ? 52 : 64}px Inter, Segoe UI, Arial, sans-serif`;
       ctx.fillStyle = game.ruby;
-      ctx.fillText(mp.roomCode || "----", titleX, titleY + (center ? 38 : compactLandscape ? 38 : 48));
+      ctx.fillText(mp.roomCode || "----", titleX, titleY + (portrait ? 42 : compactLandscape ? 46 : 58));
       ctx.restore();
 
       const b = getRoomLobbyButtonRects();
-      const cardW = Math.min(panel.w - (portrait ? 72 : 112), center ? 330 : compactLandscape ? 340 : 430);
-      const cardX = center ? panel.x + panel.w / 2 - cardW / 2 : panel.x + padX;
-      const cardH = compactLandscape ? 52 : 66;
-      const cardGap = compactLandscape ? 60 : 76;
-      const idealCardY = titleY + (center ? 88 : compactLandscape ? 82 : 112);
-      const maxCardY = b.start.y - cardGap - cardH - 18;
+      const cardW = Math.min(panel.w - (portrait ? 72 : 140), compactLandscape ? 410 : 500);
+      const cardX = panel.x + panel.w / 2 - cardW / 2;
+      const cardH = compactLandscape ? 58 : 72;
+      const cardGap = compactLandscape ? 74 : 92;
+      const idealCardY = titleY + (portrait ? 96 : compactLandscape ? 104 : 138);
+      const maxCardY = b.start.y - cardGap - cardH - 26;
       const cardY = Math.min(idealCardY, maxCardY);
-
       drawPlayerSlotCard(cardX, cardY, cardW, cardH, mp.isHost ? "VOS · HOST" : "JUGADOR 1 · HOST", mp.isHost ? mp.localPlayerName : mp.remotePlayerName, true, false);
       drawPlayerSlotCard(cardX, cardY + cardGap, cardW, cardH, mp.isHost ? "JUGADOR 2 · INVITADO" : "VOS · INVITADO", mp.isHost ? mp.remotePlayerName : mp.localPlayerName, !!mp.remotePlayerName && mp.remotePlayerName !== "Esperando jugador...", true);
-
-      ctx.save();
-      ctx.textAlign = center ? "center" : "left";
-      ctx.font = "850 11px Inter, Segoe UI, Arial, sans-serif";
-      ctx.fillStyle = "rgba(255,255,255,0.44)";
-      ctx.fillText(mp.status || "Esperando WebSocket", center ? panel.x + panel.w / 2 : cardX, Math.min(b.start.y - 14, cardY + cardGap + cardH + 22));
-      ctx.restore();
-
       if (mp.isHost) drawMenuButton(b.start, "EMPEZAR", true);
       drawMenuButton(b.cancel, mp.isHost ? "CANCELAR SALA" : "SALIR", false);
     }
@@ -10676,7 +10647,7 @@
     }
     function setAuthScreenVisible(visible) {
       if (authScreen) authScreen.classList.toggle("visible", !!visible);
-      if (authUserBadge) authUserBadge.classList.toggle("visible", !visible && !!game.authUser);
+      if (authUserBadge) authUserBadge.classList.toggle("visible", !visible && !!game.authUser && game.state === "menu");
       if (visible) clearInputs();
     }
     function syncAuthUserUI(user) {
