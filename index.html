@@ -1143,7 +1143,7 @@
       clearInputs();
     }
 
-    const GAME_VERSION_LABEL = "alpha-01";
+    const GAME_VERSION_LABEL = "alpha-02";
     const WS_LOCAL_URL = "wss://jsab-multiplayer.netherportal6611.workers.dev/ws";
 
     const onlineRoom = {
@@ -2314,6 +2314,55 @@
       if (Number.isFinite(Number(hazard._netTargetRotation))) hazard.rotation = approachAngle(hazard.rotation || 0, hazard._netTargetRotation, Math.min(1, dt * 12));
     }
 
+    function sendOnlineEnemyAttackEvent(event) {
+      if (!isOnlineHost()) return;
+      if (!onlineRoom.socket || onlineRoom.socket.readyState !== WebSocket.OPEN) return;
+      if (game.state !== "playing") return;
+      if (!event || typeof event !== "object") return;
+
+      try {
+        onlineRoom.socket.send(JSON.stringify({
+          type: "enemy_attack_event",
+          event: {
+            ...event,
+            id: event.id || `atk-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
+            wave: game.wave,
+            sentAt: Date.now(),
+          }
+        }));
+      } catch {}
+    }
+
+    function playOnlineEnemyAttackEvent(event) {
+      if (!isOnlineGuest()) return;
+      if (!event || typeof event !== "object") return;
+
+      const pos = Number.isFinite(Number(event.x)) && Number.isFinite(Number(event.y))
+        ? denormalizeRoomPoint(event.x, event.y)
+        : { x: Number(event.worldX) || player.x, y: Number(event.worldY) || player.y };
+
+      if (event.attack === "pulser_ring") {
+        const ringKind = String(event.ringKind || "pulser");
+        const color = event.color || game.ruby;
+        if (ringKind === "miniPulser") spawnMiniPulserRing(pos.x, pos.y);
+        else if (ringKind === "duopulser") spawnDuopulserRing(pos.x, pos.y);
+        else if (ringKind === "secretBoss") spawnSecretBossRing(pos.x, pos.y, color);
+        else if (ringKind === "magneto") spawnMagnetoRing(pos.x, pos.y, color);
+        else spawnPulserRing(pos.x, pos.y, color);
+        return;
+      }
+
+      if (event.attack === "doup_droub") {
+        spawnDoupulserDroub(pos.x, pos.y, event.color || "#f0024e");
+        return;
+      }
+
+      if (event.attack === "doup_blaster") {
+        spawnDoupulserBlaster(pos.x, pos.y, event.color || "#f0024e");
+        return;
+      }
+    }
+
     function syncGuestHostileAttacksFromSnapshot(msg) {
       if (!isOnlineGuest()) return;
 
@@ -2355,7 +2404,7 @@
 
       onlineEnemySendTimer -= dt;
       if (onlineEnemySendTimer > 0) return;
-      onlineEnemySendTimer = 1 / 15;
+      onlineEnemySendTimer = 1 / 20;
 
       try {
         onlineRoom.socket.send(JSON.stringify({
@@ -2468,6 +2517,7 @@
         if (Number.isFinite(Number(enemy.innerRotation))) enemy._netTargetInnerRotation = enemy.innerRotation;
 
         const prevPulseTimer = Number.isFinite(Number(enemy._guestLastPulseTimer)) ? Number(enemy._guestLastPulseTimer) : null;
+
         const prevHp = Number.isFinite(Number(enemy.hp)) ? Number(enemy.hp) : null;
 
         enemy.size = Number.isFinite(Number(snap.size)) ? Number(snap.size) : enemy.size;
@@ -2955,6 +3005,11 @@
 
       if (msg.type === "enemy_state") {
         applyOnlineEnemySnapshot(msg);
+        return;
+      }
+
+      if (msg.type === "enemy_attack_event") {
+        playOnlineEnemyAttackEvent(msg.event);
         return;
       }
 
@@ -6427,6 +6482,8 @@
         hitPlayer: false,
         life: maxRadius / speed,
       });
+      const pos = normalizeRoomPoint(x, y);
+      sendOnlineEnemyAttackEvent({ attack: "pulser_ring", ringKind: "magneto", x: pos.x, y: pos.y, color });
     }
 
     function spawnBoss19Droub(x, y, color = "#f0024e", speedMultiplier = 1.3) {
@@ -6532,6 +6589,8 @@
         hitPlayer: false,
         life: maxRadius / speed,
       });
+      const pos = normalizeRoomPoint(x, y);
+      sendOnlineEnemyAttackEvent({ attack: "pulser_ring", ringKind: "pulser", x: pos.x, y: pos.y, color });
     }
 
     function spawnSecretBossRing(x, y, color = "#42ffca") {
@@ -6553,6 +6612,8 @@
         damagePlayerAmount: 1,
         life: maxRadius / speed,
       });
+      const pos = normalizeRoomPoint(x, y);
+      sendOnlineEnemyAttackEvent({ attack: "pulser_ring", ringKind: "secretBoss", x: pos.x, y: pos.y, color });
     }
 
     function spawnDuopulserRing(x, y) {
@@ -6573,6 +6634,8 @@
         damagePlayerAmount: 2,
         life: maxRadius / speed,
       });
+      const pos = normalizeRoomPoint(x, y);
+      sendOnlineEnemyAttackEvent({ attack: "pulser_ring", ringKind: "duopulser", x: pos.x, y: pos.y, color: "#ba0d7b" });
     }
 
     function spawnMagnetoRing(x, y, color = game.ruby) {
@@ -6613,6 +6676,8 @@
         warningDuration: 1.15,
         active: false,
       });
+      const pos = normalizeRoomPoint(x, y);
+      sendOnlineEnemyAttackEvent({ attack: "doup_droub", x: pos.x, y: pos.y, color });
     }
 
     function spawnDoupulserBlaster(x, y, color = "#f0024e") {
@@ -6632,6 +6697,8 @@
         exploded: false,
         damaged: false,
       });
+      const pos = normalizeRoomPoint(x, y);
+      sendOnlineEnemyAttackEvent({ attack: "doup_blaster", x: pos.x, y: pos.y, color });
     }
 
     function spawnMiniPulserRing(x, y) {
@@ -6646,9 +6713,12 @@
         speed,
         thickness: 16,
         maxRadius,
+        minRadius: 8,
         hitPlayer: false,
         life: maxRadius / speed,
       });
+      const pos = normalizeRoomPoint(x, y);
+      sendOnlineEnemyAttackEvent({ attack: "pulser_ring", ringKind: "miniPulser", x: pos.x, y: pos.y, color: game.ruby });
     }
 
     function spawnPlayerPulsadorRing(x, y) {
@@ -7188,7 +7258,7 @@ if (player.stamina <= 0) return false;
             sendOnlineEnemyHit(enemy, p, damage);
 
             // Feedback visual local inmediato para el invitado.
-            // La vida real la confirma el host por snapshot, pero la barra no queda atrasada.
+            // El host sigue siendo autoridad, pero la barra/flash no quedan atrasados.
             enemy.hitFlash = Math.max(enemy.hitFlash || 0, 1);
             const predictedHp = Math.max(0, Number(enemy.hp || 0) - damage);
             enemy.hp = predictedHp;
@@ -9338,9 +9408,10 @@ if (player.stamina <= 0) return false;
         drawMenuPreview();
       }
 
+      drawVersionWatermark();
+
       if (!game.settingsOpen) syncSettingsCheatBox();
       drawSettingsPanel();
-      drawVersionWatermark();
     }
 
 
