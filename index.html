@@ -993,7 +993,13 @@
 
     bindTouchButton(touchRestartButton, () => {
       if (game.state === "menu") return;
-      resetGame();
+      if (isOnlineMatchActive() && game.state === "playing") {
+        requestOnlineGameOver("restart");
+      } else if ((game.state === "gameOver" || game.state === "fadeOut") && isOnlineMatchActive()) {
+        requestOnlineGameOverSkip();
+      } else {
+        resetGame();
+      }
       clearInputs();
       syncSettingsCheatBox();
       syncMobileControlsState();
@@ -1172,6 +1178,83 @@
       onlineIntermissionSkip.required = 2;
       onlineIntermissionSkip.voted = {};
       onlineIntermissionSkip.localRequested = false;
+    }
+
+    const onlineGameOverSkip = {
+      count: 0,
+      required: 2,
+      voted: {},
+      localRequested: false,
+      active: false,
+    };
+
+    function resetOnlineGameOverSkipVotes(active = false) {
+      onlineGameOverSkip.count = 0;
+      onlineGameOverSkip.required = 2;
+      onlineGameOverSkip.voted = {};
+      onlineGameOverSkip.localRequested = false;
+      onlineGameOverSkip.active = !!active;
+    }
+
+    function applyOnlineGameOverSkipVoteState(state = {}) {
+      const requiredFallback = Math.max(1, getOnlineConnectedPlayerIds().length || 2);
+      const required = Math.max(1, Number(state.required) || requiredFallback);
+      const voted = (state.voted && typeof state.voted === "object") ? { ...state.voted } : {};
+      const count = Number.isFinite(Number(state.count))
+        ? Number(state.count)
+        : getOnlineConnectedPlayerIds().filter(id => voted[id]).length;
+
+      onlineGameOverSkip.required = required;
+      onlineGameOverSkip.voted = voted;
+      onlineGameOverSkip.count = Math.max(0, Math.min(required, count));
+      onlineGameOverSkip.localRequested = !!voted[onlineRoom.playerId];
+      onlineGameOverSkip.active = true;
+    }
+
+    function markLocalOnlineGameOverSkipVote() {
+      if (!onlineRoom.playerId) return;
+      onlineGameOverSkip.voted[onlineRoom.playerId] = true;
+      onlineGameOverSkip.localRequested = true;
+      onlineGameOverSkip.required = Math.max(1, getOnlineConnectedPlayerIds().length || 2);
+      onlineGameOverSkip.count = getOnlineConnectedPlayerIds().filter(id => onlineGameOverSkip.voted[id]).length;
+      onlineGameOverSkip.active = true;
+    }
+
+    function requestOnlineGameOverSkip() {
+      if (!isOnlineMatchActive()) return false;
+      if (game.state !== "gameOver" && game.state !== "fadeOut") return true;
+      if (!onlineRoom.socket || onlineRoom.socket.readyState !== WebSocket.OPEN) return true;
+
+      markLocalOnlineGameOverSkipVote();
+
+      try {
+        onlineRoom.socket.send(JSON.stringify({
+          type: "game_over_skip_vote",
+        }));
+      } catch {}
+
+      return true;
+    }
+
+    function requestOnlineGameOver(reason = "restart") {
+      if (!isOnlineMatchActive() || !onlineRoom.socket || onlineRoom.socket.readyState !== WebSocket.OPEN) return false;
+
+      try {
+        onlineRoom.socket.send(JSON.stringify({
+          type: "request_game_over",
+          reason,
+        }));
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    function getOnlineGameOverSkipLabel() {
+      if (!isOnlineMatchActive() || (game.state !== "gameOver" && game.state !== "fadeOut")) return "";
+      const required = Math.max(1, Number(onlineGameOverSkip.required) || 2);
+      const count = Math.max(0, Math.min(required, Number(onlineGameOverSkip.count) || 0));
+      return `Espacio para saltar (${count}/${required})`;
     }
 
     function getOnlineConnectedPlayerIds() {
@@ -1990,7 +2073,7 @@
       if (!remote || !remote.connected) return;
 
       if (player.downed && remote.downed) {
-        startGameOver();
+        if (!requestOnlineGameOver("both_downed")) startGameOver();
       }
     }
 
@@ -2752,8 +2835,24 @@
         return;
       }
 
+      if (msg.type === "game_over_started") {
+        if (game.state !== "gameOver" && game.state !== "fadeOut") {
+          startGameOver(true);
+        } else {
+          resetOnlineGameOverSkipVotes(true);
+        }
+        return;
+      }
+
+      if (msg.type === "game_over_skip_votes") {
+        applyOnlineGameOverSkipVoteState(msg);
+        return;
+      }
+
       if (msg.type === "game_over_skipped") {
+        if (msg.players) onlineRoom.players = msg.players;
         skipGameOver(true);
+        sendOnlinePlayerStateNow();
         return;
       }
     }
@@ -2884,7 +2983,7 @@
       mouse.y = p.y;
 
       if ((game.state === "gameOver" || game.state === "fadeOut") && e.button === 0) {
-        skipGameOver();
+        if (!requestOnlineGameOverSkip()) skipGameOver();
         return;
       }
 
@@ -2955,14 +3054,18 @@
         e.preventDefault();
 
         if (game.state === "gameOver" || game.state === "fadeOut") {
-          skipGameOver();
+          if (!requestOnlineGameOverSkip()) skipGameOver();
         } else if (game.state === "playing") {
           startDash();
         }
       }
 
       if (e.key.toLowerCase() === "r") {
-        resetGame();
+        if (isOnlineMatchActive() && game.state === "playing") {
+          requestOnlineGameOver("restart");
+        } else {
+          resetGame();
+        }
       }
 
       if (e.key.toLowerCase() === "e" && game.state === "playing" && game.waveState === "intermission") {
@@ -4313,6 +4416,10 @@
     }
 
     function spendStamina(amount) {
+      if (game.state === "playing" && game.waveState === "intermission") {
+        return;
+      }
+
       if (player.infiniteStamina) {
         player.stamina = player.staminaSegments;
         player.staminaVisual = player.staminaSegments;
@@ -4570,7 +4677,8 @@
       }
     }
 
-    function startGameOver() {
+    function startGameOver(fromOnline = false) {
+      resetOnlineGameOverSkipVotes(isOnlineMatchActive());
       game.state = "gameOver";
       game.gameOverTimer = 8.0;
       game.gameOverTextTimer = 0;
@@ -4587,18 +4695,16 @@
     }
 
     function sendOnlineSkipGameOver() {
-      if (!isOnlineHost() || !onlineRoom.socket || onlineRoom.socket.readyState !== WebSocket.OPEN) return;
-
-      try {
-        onlineRoom.socket.send(JSON.stringify({
-          type: "skip_game_over"
-        }));
-      } catch {}
+      requestOnlineGameOverSkip();
     }
 
     function skipGameOver(fromOnline = false) {
-      if (!fromOnline) sendOnlineSkipGameOver();
+      if (!fromOnline && isOnlineMatchActive()) {
+        requestOnlineGameOverSkip();
+        return;
+      }
 
+      resetOnlineGameOverSkipVotes(false);
       game.gameOverTimer = 0;
       game.gameOverTextTimer = 1;
       game.fade = 1;
@@ -4611,6 +4717,19 @@
       syncRoomCodeBox();
       resetGame();
       game.state = "playing";
+
+      if (isOnlineMatchActive()) {
+        game.wave = 0;
+        game.waveState = "intermission";
+        game.intermissionTimer = 5;
+        game.intermissionDuration = Math.max(game.intermissionDuration || 5, 5);
+        game.waveTimer = 0;
+        game.roomStartTimer = 0;
+        resetOnlineIntermissionSkipVotes(0);
+        clearUpgradePickup();
+        clearHealPickup();
+        showWaveBanner("PREPARACIÓN", "oleada 1 en 5 segundos");
+      }
 
       if (isOnlineGuest()) {
         enemies.length = 0;
@@ -4671,6 +4790,8 @@
       game.preciseShotCooldown = 0;
       clearUpgradePickup();
       clearHealPickup();
+      player.maxHp = 3;
+      player.hp = 3;
 
       resetPlayer();
       obstacles.length = 0;
@@ -4723,6 +4844,10 @@
       game.upgrades = {};
       game.salvavidasReady = false;
       game.stationaryFireHold = 0;
+      game.reviveCooldown = 0;
+      mobileInput.revive = false;
+      onlineReviveState.progress = 0;
+      onlineReviveState.targetId = "";
       game.weaponMode = "normal";
       game.multiShotCooldown = 0;
       game.hasPulsador = false;
@@ -4733,6 +4858,8 @@
       game.preciseShotCooldown = 0;
       clearUpgradePickup();
       clearHealPickup();
+      player.maxHp = 3;
+      player.hp = 3;
 
       resetPlayer();
       obstacles.length = 0;
@@ -6364,7 +6491,8 @@
       if (player.downed) return false;
       if (!game.hasCurador) return false;
       if (game.state !== "playing" || game.settingsOpen || game.upgradeShopOpen) return false;
-      if (game.waveState !== "combat" || game.roomStartTimer > 0) return false;
+      if (game.waveState !== "combat" && game.waveState !== "intermission") return false;
+      if (game.waveState === "combat" && game.roomStartTimer > 0) return false;
       if (game.curadorCooldown > 0) return false;
       if (player.hp >= player.maxHp) return false;
       if (player.stamina <= 0 && !player.infiniteStamina) return false;
@@ -7046,8 +7174,8 @@ if (player.stamina <= 0) return false;
       if (
         game.curadorCooldown > 0 &&
         game.state === "playing" &&
-        game.waveState === "combat" &&
-        game.roomStartTimer <= 0 &&
+        (game.waveState === "combat" || game.waveState === "intermission") &&
+        (game.waveState === "intermission" || game.roomStartTimer <= 0) &&
         !game.settingsOpen &&
         !game.upgradeShopOpen
       ) {
@@ -7131,23 +7259,31 @@ if (player.stamina <= 0) return false;
       }
 
       if (game.state === "gameOver") {
-        game.gameOverTimer -= dt;
+        if (!isOnlineMatchActive()) {
+          game.gameOverTimer -= dt;
+        }
         game.gameOverTextTimer += dt;
 
-        if (game.gameOverTimer <= 0) {
+        if (!isOnlineMatchActive() && game.gameOverTimer <= 0) {
           game.state = "fadeOut";
           syncMobileControlsState();
         }
       }
 
       if (game.state === "fadeOut") {
-        game.fade += dt * 3.2;
-
-        if (game.fade >= 1) {
-          game.fade = 1;
-          resetRunAfterDeath();
-          game.state = "fadeIn";
+        if (isOnlineMatchActive()) {
+          game.fade = 0;
+          game.state = "gameOver";
           syncMobileControlsState();
+        } else {
+          game.fade += dt * 3.2;
+
+          if (game.fade >= 1) {
+            game.fade = 1;
+            resetRunAfterDeath();
+            game.state = "fadeIn";
+            syncMobileControlsState();
+          }
         }
       }
 
@@ -9802,13 +9938,14 @@ if (player.stamina <= 0) return false;
     }
 
     function drawSkipGameOverHint(alpha, y, mobile) {
-      const keyW = mobile ? 162 : 210;
+      const onlineSkipLabel = getOnlineGameOverSkipLabel();
+      const text = onlineSkipLabel || (mobile ? "TOCÁ / SPACE" : "SPACE");
+      const hint = onlineSkipLabel ? "esperando a ambos jugadores" : "para reiniciar";
+      const keyW = onlineSkipLabel ? Math.min(canvas.width - 40, mobile ? 260 : 340) : (mobile ? 162 : 210);
       const keyH = mobile ? 34 : 38;
       const keyX = canvas.width / 2 - keyW / 2;
       const keyY = Math.min(y, canvas.height - keyH - 24);
       const r = keyH / 2;
-      const text = mobile ? "TOCÁ / SPACE" : "SPACE";
-      const hint = "para reiniciar";
 
       ctx.save();
       ctx.globalAlpha = alpha * 0.92;
