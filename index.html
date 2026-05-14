@@ -1344,6 +1344,28 @@
       }
     }
 
+    function remoteOnlineProjectileHitsEnemyVisual(p) {
+      const projectileRadius = getPlayerProjectileHitHalfSize(p);
+
+      for (let i = enemies.length - 1; i >= 0; i--) {
+        const enemy = enemies[i];
+        if (!enemy || enemy.hp <= 0) continue;
+
+        const dx = p.x - enemy.x;
+        const dy = p.y - enemy.y;
+        const enemyRadius = getEnemyBodyHitRadius(enemy);
+        const hit = dx * dx + dy * dy <= Math.pow(projectileRadius + enemyRadius, 2);
+
+        if (hit) {
+          enemy.hitFlash = Math.max(enemy.hitFlash || 0, 0.65);
+          spawnHitParticles(p.x, p.y, p.precise ? "#ffffff" : (p.color || "#00ff8c"), 6);
+          return true;
+        }
+      }
+
+      return false;
+    }
+
     function updateRemoteOnlineProjectiles(dt) {
       for (let i = onlineRemoteProjectiles.length - 1; i >= 0; i--) {
         const p = onlineRemoteProjectiles[i];
@@ -1360,9 +1382,10 @@
 
         const hitWall = projectileHitsWall(p);
         const hitObstacle = projectileHitsObstacle(p);
+        const hitEnemy = remoteOnlineProjectileHitsEnemyVisual(p);
         const farOutside = remoteProjectileOutOfRoom(p, 48);
 
-        if (p.life <= 0 || hitWall || hitObstacle || farOutside) {
+        if (p.life <= 0 || hitWall || hitObstacle || hitEnemy || farOutside) {
           if (hitWall || farOutside) {
             const rr = room.getRect();
             p.x = clamp(p.x, rr.x + p.size / 2, rr.x + rr.w - p.size / 2);
