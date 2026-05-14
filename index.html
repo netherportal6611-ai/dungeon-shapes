@@ -1249,6 +1249,20 @@
       return true;
     }
 
+    function tryStartNextWaveFromOnlineSkipVotes() {
+      if (!isOnlineHost()) return false;
+      if (game.state !== "playing" || game.waveState !== "intermission") return false;
+      if (Number(onlineIntermissionSkip.wave) !== Number(game.wave)) return false;
+
+      const required = Math.max(1, Number(onlineIntermissionSkip.required) || 2);
+      const count = Math.max(0, Number(onlineIntermissionSkip.count) || 0);
+      if (count < required) return false;
+
+      resetOnlineIntermissionSkipVotes(Number(game.wave) + 1);
+      startNextWave();
+      return true;
+    }
+
     function getOnlineIntermissionSkipLabel() {
       if (!isOnlineMatchActive() || game.waveState !== "intermission") return "";
       const required = Math.max(1, Number(onlineIntermissionSkip.required) || 2);
@@ -2645,7 +2659,12 @@
 
       if (msg.type === "players_state") {
         onlineRoom.players = msg.players || {};
-        mergeOnlineIntermissionSkipVotesFromPlayers(onlineRoom.players);
+
+        if (game.state === "playing" && game.waveState === "intermission") {
+          mergeOnlineIntermissionSkipVotesFromPlayers(onlineRoom.players);
+          tryStartNextWaveFromOnlineSkipVotes();
+        }
+
         return;
       }
 
@@ -2686,17 +2705,7 @@
 
       if (msg.type === "intermission_skip_votes") {
         applyOnlineIntermissionSkipVoteState(msg);
-
-        if (
-          isOnlineHost() &&
-          game.state === "playing" &&
-          game.waveState === "intermission" &&
-          Number(msg.wave) === Number(game.wave) &&
-          onlineIntermissionSkip.count >= onlineIntermissionSkip.required
-        ) {
-          resetOnlineIntermissionSkipVotes(Number(game.wave) + 1);
-          startNextWave();
-        }
+        tryStartNextWaveFromOnlineSkipVotes();
         return;
       }
 
