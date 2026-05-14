@@ -2322,22 +2322,29 @@
 
       // IMPORTANTE: los ataques hostiles no se interpolan.
       // Son hitboxes de daño, así que el invitado debe ver exactamente el snapshot del host.
-      // Si los suavizamos, pueden desaparecer/atravesar/desincronizarse.
-      for (let i = projectiles.length - 1; i >= 0; i--) {
-        if (projectiles[i].enemyProjectile) projectiles.splice(i, 1);
-      }
-      for (const snap of hostileProjectiles) {
-        projectiles.push(deserializeOnlineHostileProjectile(snap));
-      }
-
-      pulserRings.length = 0;
-      for (const snap of rings) {
-        pulserRings.push(deserializeOnlinePulserRing(snap));
+      // Si el snapshot llega vacío por latencia/worker/caché, NO borramos los ataques locales:
+      // los dejamos expirar por life/timer para que no desaparezcan cada 1/15s.
+      if (hostileProjectiles.length > 0) {
+        for (let i = projectiles.length - 1; i >= 0; i--) {
+          if (projectiles[i].enemyProjectile) projectiles.splice(i, 1);
+        }
+        for (const snap of hostileProjectiles) {
+          projectiles.push(deserializeOnlineHostileProjectile(snap));
+        }
       }
 
-      bossHazards.length = 0;
-      for (const snap of hazards) {
-        bossHazards.push(deserializeOnlineBossHazard(snap));
+      if (rings.length > 0) {
+        pulserRings.length = 0;
+        for (const snap of rings) {
+          pulserRings.push(deserializeOnlinePulserRing(snap));
+        }
+      }
+
+      if (hazards.length > 0) {
+        bossHazards.length = 0;
+        for (const snap of hazards) {
+          bossHazards.push(deserializeOnlineBossHazard(snap));
+        }
       }
     }
 
@@ -2486,14 +2493,20 @@
         // y creamos el anillo localmente. Esto evita que el invitado quede inmortal o sin ver ataques.
         if (
           (enemy.type === "pulser" || enemy.type === "miniPulser" || enemy.type === "duopulser") &&
-          (!Array.isArray(msg.pulserRings) || msg.pulserRings.length === 0) &&
           prevPulseTimer !== null &&
           Number.isFinite(Number(enemy.pulseTimer)) &&
           Number(enemy.pulseTimer) > prevPulseTimer + 0.45
         ) {
-          if (enemy.type === "miniPulser") spawnMiniPulserRing(enemy.x, enemy.y);
-          else if (enemy.type === "duopulser") spawnDuopulserRing(enemy.x, enemy.y);
-          else spawnPulserRing(enemy.x, enemy.y);
+          const hasSyncedRingNearEnemy = pulserRings.some(ring => {
+            const dx = ring.x - enemy.x;
+            const dy = ring.y - enemy.y;
+            return dx * dx + dy * dy <= 90 * 90 && (ring.life || 0) > 0.08;
+          });
+          if (!hasSyncedRingNearEnemy) {
+            if (enemy.type === "miniPulser") spawnMiniPulserRing(enemy.x, enemy.y);
+            else if (enemy.type === "duopulser") spawnDuopulserRing(enemy.x, enemy.y);
+            else spawnPulserRing(enemy.x, enemy.y);
+          }
         }
         if (Number.isFinite(Number(enemy.pulseTimer))) enemy._guestLastPulseTimer = Number(enemy.pulseTimer);
 
