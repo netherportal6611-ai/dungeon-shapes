@@ -7079,7 +7079,7 @@ if (player.stamina <= 0) return false;
       if (game.state === "playing" && game.xpChoiceOpen) {
         mouse.down = false;
         mouse.rightDown = false;
-      } else if (game.state === "playing" && !game.settingsOpen && !game.upgradeShopOpen && !isOnlineCoopPauseBlocking()) {
+      } else if (game.state === "playing" && !game.settingsOpen && !game.upgradeShopOpen && !isOnlineCoopXPChoiceBlocking()) {
         updateMobileAimTarget();
         if (!player.downed) {
           if (mobileInput.leftFire) mouse.down = true;
