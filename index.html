@@ -923,7 +923,11 @@
         touchSkipWaveButton.style.opacity = "0.35";
         return;
       }
-      if (game.touchSkipCooldown > 0) {
+      const onlineSkipLabel = getOnlineIntermissionSkipLabel();
+      if (onlineSkipLabel) {
+        touchSkipWaveButton.innerHTML = onlineSkipLabel.replace(" ", "<br>");
+        touchSkipWaveButton.style.opacity = onlineIntermissionSkip.localRequested ? "0.70" : "1";
+      } else if (game.touchSkipCooldown > 0) {
         touchSkipWaveButton.innerHTML = `SALTEAR<br>${Math.ceil(game.touchSkipCooldown)}s`;
         touchSkipWaveButton.style.opacity = "0.55";
       } else {
@@ -1002,6 +1006,10 @@
       if (game.waveState !== "intermission") return;
       if (game.touchSkipCooldown > 0) return;
       game.touchSkipCooldown = game.touchSkipInterval;
+      if (requestOnlineIntermissionSkip()) {
+        clearInputs();
+        return;
+      }
       startNextWave();
       clearInputs();
     }, () => {});
@@ -1140,6 +1148,46 @@
       required: 2.1,
       range: 74,
     };
+
+    const onlineIntermissionSkip = {
+      wave: 0,
+      count: 0,
+      required: 2,
+      voted: {},
+      localRequested: false,
+    };
+
+    function resetOnlineIntermissionSkipVotes(wave = 0) {
+      onlineIntermissionSkip.wave = Number(wave) || 0;
+      onlineIntermissionSkip.count = 0;
+      onlineIntermissionSkip.required = 2;
+      onlineIntermissionSkip.voted = {};
+      onlineIntermissionSkip.localRequested = false;
+    }
+
+    function requestOnlineIntermissionSkip() {
+      if (!isOnlineMatchActive()) return false;
+      if (game.state !== "playing" || game.waveState !== "intermission") return true;
+      if (!onlineRoom.socket || onlineRoom.socket.readyState !== WebSocket.OPEN) return true;
+
+      onlineIntermissionSkip.localRequested = true;
+
+      try {
+        onlineRoom.socket.send(JSON.stringify({
+          type: "intermission_skip_vote",
+          wave: game.wave,
+        }));
+      } catch {}
+
+      return true;
+    }
+
+    function getOnlineIntermissionSkipLabel() {
+      if (!isOnlineMatchActive() || game.waveState !== "intermission") return "";
+      const required = Math.max(1, Number(onlineIntermissionSkip.required) || 2);
+      const count = Math.max(0, Math.min(required, Number(onlineIntermissionSkip.count) || 0));
+      return `SALTEAR ${count}/${required}`;
+    }
 
     const remoteOnlineVisual = {
       id: "",
@@ -2056,7 +2104,12 @@
         giveLocalOnlinePostBossReward(game.wave);
       }
 
+      if (prevWaveState !== "intermission" && game.waveState === "intermission") {
+        resetOnlineIntermissionSkipVotes(game.wave);
+      }
+
       if (prevWaveState === "intermission" && game.waveState === "combat") {
+        resetOnlineIntermissionSkipVotes(game.wave);
         // El host ya empezó la próxima oleada: cerramos solo la recompensa local pendiente del invitado.
         clearUpgradePickup();
         clearHealPickup();
@@ -2553,6 +2606,26 @@
         return;
       }
 
+      if (msg.type === "intermission_skip_votes") {
+        onlineIntermissionSkip.wave = Number(msg.wave) || game.wave;
+        onlineIntermissionSkip.count = Number(msg.count) || 0;
+        onlineIntermissionSkip.required = Number(msg.required) || 2;
+        onlineIntermissionSkip.voted = msg.voted || {};
+        onlineIntermissionSkip.localRequested = !!onlineIntermissionSkip.voted?.[onlineRoom.playerId];
+
+        if (
+          isOnlineHost() &&
+          game.state === "playing" &&
+          game.waveState === "intermission" &&
+          Number(msg.wave) === Number(game.wave) &&
+          onlineIntermissionSkip.count >= onlineIntermissionSkip.required
+        ) {
+          resetOnlineIntermissionSkipVotes(Number(game.wave) + 1);
+          startNextWave();
+        }
+        return;
+      }
+
       if (msg.type === "game_over_skipped") {
         skipGameOver(true);
         return;
@@ -2767,7 +2840,8 @@
       }
 
       if (e.key.toLowerCase() === "e" && game.state === "playing" && game.waveState === "intermission") {
-        startNextWave();
+        e.preventDefault();
+        if (!requestOnlineIntermissionSkip()) startNextWave();
       }
 
       if (e.key.toLowerCase() === "q" && game.state === "playing") {
@@ -4570,6 +4644,7 @@
     }
 
     function startNextWave() {
+      resetOnlineIntermissionSkipVotes(Number(game.wave) + 1);
       // Salto seguro de intermisión: limpia estados transitorios antes de crear la wave nueva.
       game.waveState = "combat";
       game.intermissionTimer = 0;
@@ -4820,6 +4895,7 @@
 
       game.waveState = "intermission";
       game.intermissionTimer = game.intermissionDuration;
+      resetOnlineIntermissionSkipVotes(game.wave);
       game.shootTimer = 0;
       mouse.down = false;
       clearUpgradePickup();
@@ -9526,9 +9602,10 @@
 
         ctx.font = "800 12px Inter, Montserrat, Arial, sans-serif";
         ctx.fillStyle = "rgba(255,255,255,0.72)";
+        const skipVoteLabel = getOnlineIntermissionSkipLabel();
         const timeLabel = bossWave && game.waveState === "combat" ? "∞" : `${seconds}s`;
         ctx.fillText(`ENEMIGOS ${enemiesText}`, x + 118, y + 10);
-        ctx.fillText(`TIEMPO ${timeLabel}`, x + 118, y + 30);
+        ctx.fillText(skipVoteLabel || `TIEMPO ${timeLabel}`, x + 118, y + 30);
 
         ctx.save();
         ctx.translate(x + 232, y + 19);
@@ -9601,7 +9678,10 @@
       ctx.font = "800 13px Inter, Montserrat, Arial, sans-serif";
       ctx.fillStyle = "#d7d9e1";
       ctx.fillText(`ENEMIGOS: ${enemiesText}`, lineX, y + 84);
-      const timeLabel = game.waveState === "intermission" ? `INTERMISIÓN: ${seconds}s` : (bossWave ? "SIN TIMER" : `TIEMPO: ${seconds}s`);
+      const skipVoteLabel = getOnlineIntermissionSkipLabel();
+      const timeLabel = game.waveState === "intermission"
+        ? `INTERMISIÓN: ${seconds}s${skipVoteLabel ? " · " + skipVoteLabel : ""}`
+        : (bossWave ? "SIN TIMER" : `TIEMPO: ${seconds}s`);
       ctx.fillText(timeLabel, lineX, y + 104);
 
       ctx.save();
