@@ -1738,7 +1738,6 @@
         phase2: !!enemy.phase2,
         shieldHp: enemy.shieldHp || 0,
         shieldMaxHp: enemy.shieldMaxHp || 0,
-        hitFlash: enemy.hitFlash || 0,
       };
 
       // Campos visuales/mecánicos seguros para que el dibujo del invitado no se rompa.
@@ -2171,7 +2170,6 @@
         rotateTimer: 0,
         life: Number(snap.life) || 0.1,
         color: snap.color || game.ruby,
-        hitFlash: Number(snap.hitFlash) || 0,
       };
     }
 
@@ -2315,6 +2313,55 @@
       if (Number.isFinite(Number(hazard._netTargetRotation))) hazard.rotation = approachAngle(hazard.rotation || 0, hazard._netTargetRotation, Math.min(1, dt * 12));
     }
 
+    function sendOnlineEnemyAttackEvent(event) {
+      if (!isOnlineHost()) return;
+      if (!onlineRoom.socket || onlineRoom.socket.readyState !== WebSocket.OPEN) return;
+      if (game.state !== "playing") return;
+      if (!event || typeof event !== "object") return;
+
+      try {
+        onlineRoom.socket.send(JSON.stringify({
+          type: "enemy_attack_event",
+          event: {
+            ...event,
+            id: event.id || `atk-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
+            wave: game.wave,
+            sentAt: Date.now(),
+          }
+        }));
+      } catch {}
+    }
+
+    function playOnlineEnemyAttackEvent(event) {
+      if (!isOnlineGuest()) return;
+      if (!event || typeof event !== "object") return;
+
+      const pos = Number.isFinite(Number(event.x)) && Number.isFinite(Number(event.y))
+        ? denormalizeRoomPoint(event.x, event.y)
+        : { x: Number(event.worldX) || player.x, y: Number(event.worldY) || player.y };
+
+      if (event.attack === "pulser_ring") {
+        const ringKind = String(event.ringKind || "pulser");
+        const color = event.color || game.ruby;
+        if (ringKind === "miniPulser") spawnMiniPulserRing(pos.x, pos.y);
+        else if (ringKind === "duopulser") spawnDuopulserRing(pos.x, pos.y);
+        else if (ringKind === "secretBoss") spawnSecretBossRing(pos.x, pos.y, color);
+        else if (ringKind === "magneto") spawnMagnetoRing(pos.x, pos.y, color);
+        else spawnPulserRing(pos.x, pos.y, color);
+        return;
+      }
+
+      if (event.attack === "doup_droub") {
+        spawnDoupulserDroub(pos.x, pos.y, event.color || "#f0024e");
+        return;
+      }
+
+      if (event.attack === "doup_blaster") {
+        spawnDoupulserBlaster(pos.x, pos.y, event.color || "#f0024e");
+        return;
+      }
+    }
+
     function syncGuestHostileAttacksFromSnapshot(msg) {
       if (!isOnlineGuest()) return;
 
@@ -2356,7 +2403,7 @@
 
       onlineEnemySendTimer -= dt;
       if (onlineEnemySendTimer > 0) return;
-      onlineEnemySendTimer = 1 / 15;
+      onlineEnemySendTimer = 1 / 20;
 
       try {
         onlineRoom.socket.send(JSON.stringify({
@@ -2456,9 +2503,6 @@
         enemy._onlineId = snap.id;
         enemy.type = snap.type || enemy.type;
 
-        const prevHpForOnlineFeedback = Number.isFinite(Number(enemy.hp)) ? Number(enemy.hp) : Number(snap.hp);
-        const prevShieldForOnlineFeedback = Number.isFinite(Number(enemy.shieldHp)) ? Number(enemy.shieldHp) : Number(snap.shieldHp || 0);
-
         // FIX: en invitado, la interpolación anterior podía dejar enemigos/ataques desfasados
         // o directamente sin actualizar. Volvemos a usar el snapshot del host como fuente real.
         if (Number.isFinite(wx)) enemy.x = wx;
@@ -2474,42 +2518,13 @@
         const prevPulseTimer = Number.isFinite(Number(enemy._guestLastPulseTimer)) ? Number(enemy._guestLastPulseTimer) : null;
 
         enemy.size = Number.isFinite(Number(snap.size)) ? Number(snap.size) : enemy.size;
-
-        let nextHpFromHost = Number.isFinite(Number(snap.hp)) ? Number(snap.hp) : enemy.hp;
-        const nowForPrediction = performance.now();
-        if (
-          Number.isFinite(Number(enemy._guestPredictedHp)) &&
-          Number(enemy._guestPredictedHpUntil || 0) > nowForPrediction
-        ) {
-          nextHpFromHost = Math.min(nextHpFromHost, Number(enemy._guestPredictedHp));
-        }
-        if (Number.isFinite(Number(snap.hp)) && Number(snap.hp) <= Number(enemy._guestPredictedHp ?? Infinity) + 0.001) {
-          enemy._guestPredictedHp = undefined;
-          enemy._guestPredictedHpUntil = 0;
-        }
-
-        enemy.hp = nextHpFromHost;
+        enemy.hp = Number.isFinite(Number(snap.hp)) ? Number(snap.hp) : enemy.hp;
         enemy.maxHp = Number.isFinite(Number(snap.maxHp)) ? Number(snap.maxHp) : enemy.maxHp;
-        enemy.hpVisual = Number.isFinite(Number(snap.hpVisual)) ? Math.min(Number(snap.hpVisual), enemy.hp) : (enemy.hpVisual ?? enemy.hp);
+        enemy.hpVisual = Number.isFinite(Number(snap.hpVisual)) ? Number(snap.hpVisual) : (enemy.hpVisual ?? enemy.hp);
         enemy.color = snap.color || enemy.color;
         enemy.phase2 = !!snap.phase2;
         enemy.shieldHp = Number.isFinite(Number(snap.shieldHp)) ? Number(snap.shieldHp) : (enemy.shieldHp || 0);
         enemy.shieldMaxHp = Number.isFinite(Number(snap.shieldMaxHp)) ? Number(snap.shieldMaxHp) : (enemy.shieldMaxHp || 0);
-
-        const hostHitFlash = Number.isFinite(Number(snap.hitFlash)) ? Number(snap.hitFlash) : 0;
-        if (hostHitFlash > 0) {
-          enemy.hitFlash = Math.max(enemy.hitFlash || 0, hostHitFlash);
-        }
-
-        const hpDroppedFromHost = !wasNewEnemy && Number.isFinite(prevHpForOnlineFeedback) && Number.isFinite(Number(snap.hp)) && Number(snap.hp) < prevHpForOnlineFeedback - 0.001;
-        const shieldDroppedFromHost = !wasNewEnemy && Number.isFinite(prevShieldForOnlineFeedback) && Number.isFinite(Number(snap.shieldHp)) && Number(snap.shieldHp) < prevShieldForOnlineFeedback - 0.001;
-        if (hpDroppedFromHost || shieldDroppedFromHost) {
-          const amount = Math.max(1, Math.round((hpDroppedFromHost ? prevHpForOnlineFeedback - Number(snap.hp) : prevShieldForOnlineFeedback - Number(snap.shieldHp)) * 10) / 10);
-          enemy.hitFlash = 1;
-          enemy.hpVisual = Math.min(enemy.hpVisual ?? enemy.hp, enemy.hp);
-          spawnHitParticles(enemy.x, enemy.y, "#42dfff", 8);
-          spawnFloatingText(`-${amount}`, enemy.x + (Math.random() - 0.5) * enemy.size * 0.35, enemy.y - enemy.size * 0.55, "#42dfff", 13);
-        }
 
         const numericKeys = [
           "pulseTimer", "pulseInterval", "rotationSpeed", "rayLength", "rayWidth",
@@ -2973,6 +2988,11 @@
 
       if (msg.type === "enemy_state") {
         applyOnlineEnemySnapshot(msg);
+        return;
+      }
+
+      if (msg.type === "enemy_attack_event") {
+        playOnlineEnemyAttackEvent(msg.event);
         return;
       }
 
@@ -6445,6 +6465,8 @@
         hitPlayer: false,
         life: maxRadius / speed,
       });
+      const pos = normalizeRoomPoint(x, y);
+      sendOnlineEnemyAttackEvent({ attack: "pulser_ring", ringKind: "magneto", x: pos.x, y: pos.y, color });
     }
 
     function spawnBoss19Droub(x, y, color = "#f0024e", speedMultiplier = 1.3) {
@@ -6550,6 +6572,8 @@
         hitPlayer: false,
         life: maxRadius / speed,
       });
+      const pos = normalizeRoomPoint(x, y);
+      sendOnlineEnemyAttackEvent({ attack: "pulser_ring", ringKind: "pulser", x: pos.x, y: pos.y, color });
     }
 
     function spawnSecretBossRing(x, y, color = "#42ffca") {
@@ -6571,6 +6595,8 @@
         damagePlayerAmount: 1,
         life: maxRadius / speed,
       });
+      const pos = normalizeRoomPoint(x, y);
+      sendOnlineEnemyAttackEvent({ attack: "pulser_ring", ringKind: "secretBoss", x: pos.x, y: pos.y, color });
     }
 
     function spawnDuopulserRing(x, y) {
@@ -6591,6 +6617,8 @@
         damagePlayerAmount: 2,
         life: maxRadius / speed,
       });
+      const pos = normalizeRoomPoint(x, y);
+      sendOnlineEnemyAttackEvent({ attack: "pulser_ring", ringKind: "duopulser", x: pos.x, y: pos.y, color: "#ba0d7b" });
     }
 
     function spawnMagnetoRing(x, y, color = game.ruby) {
@@ -6631,6 +6659,8 @@
         warningDuration: 1.15,
         active: false,
       });
+      const pos = normalizeRoomPoint(x, y);
+      sendOnlineEnemyAttackEvent({ attack: "doup_droub", x: pos.x, y: pos.y, color });
     }
 
     function spawnDoupulserBlaster(x, y, color = "#f0024e") {
@@ -6650,6 +6680,8 @@
         exploded: false,
         damaged: false,
       });
+      const pos = normalizeRoomPoint(x, y);
+      sendOnlineEnemyAttackEvent({ attack: "doup_blaster", x: pos.x, y: pos.y, color });
     }
 
     function spawnMiniPulserRing(x, y) {
@@ -6664,9 +6696,12 @@
         speed,
         thickness: 16,
         maxRadius,
+        minRadius: 8,
         hitPlayer: false,
         life: maxRadius / speed,
       });
+      const pos = normalizeRoomPoint(x, y);
+      sendOnlineEnemyAttackEvent({ attack: "pulser_ring", ringKind: "miniPulser", x: pos.x, y: pos.y, color: game.ruby });
     }
 
     function spawnPlayerPulsadorRing(x, y) {
@@ -7204,20 +7239,7 @@ if (player.stamina <= 0) return false;
           if (isOnlineGuest()) {
             const damage = applyPlayerDamageModifiers(p.damage || 1);
             sendOnlineEnemyHit(enemy, p, damage);
-
-            // Feedback local inmediato para el invitado: el host sigue siendo la autoridad real,
-            // pero el disparo ya no se siente atrasado ni invisible en la pantalla del invitado.
-            const predictedHp = Math.max(0, (Number(enemy.hp) || 0) - damage);
-            enemy.hitFlash = 1;
-            enemy._guestPredictedHp = Number.isFinite(Number(enemy._guestPredictedHp))
-              ? Math.min(Number(enemy._guestPredictedHp), predictedHp)
-              : predictedHp;
-            enemy._guestPredictedHpUntil = performance.now() + 520;
-            enemy.hp = Math.min(Number(enemy.hp) || predictedHp, predictedHp);
-            enemy.hpVisual = Math.min(Number(enemy.hpVisual ?? enemy.hp) || predictedHp, predictedHp);
-
-            spawnHitParticles(p.x, p.y, p.precise ? "#ffffff" : "#00ff8c", 8);
-            spawnFloatingText(`-${damage}`, enemy.x + (Math.random() - 0.5) * enemy.size * 0.35, enemy.y - enemy.size * 0.55, p.precise ? "#ffffff" : "#00ff8c", p.precise ? 15 : 13);
+            spawnHitParticles(p.x, p.y, p.precise ? "#ffffff" : "#00ff8c", 6);
             return true;
           }
 
