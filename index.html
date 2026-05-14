@@ -1165,18 +1165,64 @@
       onlineIntermissionSkip.localRequested = false;
     }
 
+    function getOnlineConnectedPlayerIds() {
+      const ids = [];
+      const players = onlineRoom.players || {};
+      if (players.p1?.connected || onlineRoom.playerId === "p1") ids.push("p1");
+      if (players.p2?.connected || onlineRoom.playerId === "p2") ids.push("p2");
+      return ids.length ? ids : (onlineRoom.playerId ? [onlineRoom.playerId] : []);
+    }
+
+    function applyOnlineIntermissionSkipVoteState(state = {}) {
+      const wave = Number(state.wave) || game.wave;
+      const requiredFallback = Math.max(1, getOnlineConnectedPlayerIds().length || 2);
+      const required = Math.max(1, Number(state.required) || requiredFallback);
+      const voted = (state.voted && typeof state.voted === "object") ? { ...state.voted } : {};
+      const count = Number.isFinite(Number(state.count))
+        ? Number(state.count)
+        : getOnlineConnectedPlayerIds().filter(id => voted[id]).length;
+
+      onlineIntermissionSkip.wave = wave;
+      onlineIntermissionSkip.required = required;
+      onlineIntermissionSkip.voted = voted;
+      onlineIntermissionSkip.count = Math.max(0, Math.min(required, count));
+      onlineIntermissionSkip.localRequested = !!voted[onlineRoom.playerId];
+    }
+
+    function markLocalOnlineIntermissionSkipVote() {
+      if (!onlineRoom.playerId) return;
+      if (Number(onlineIntermissionSkip.wave) !== Number(game.wave)) {
+        resetOnlineIntermissionSkipVotes(game.wave);
+      }
+
+      onlineIntermissionSkip.voted[onlineRoom.playerId] = true;
+      onlineIntermissionSkip.localRequested = true;
+      onlineIntermissionSkip.required = Math.max(1, getOnlineConnectedPlayerIds().length || 2);
+      onlineIntermissionSkip.count = getOnlineConnectedPlayerIds().filter(id => onlineIntermissionSkip.voted[id]).length;
+    }
+
+    function getOnlineIntermissionSkipStateForSnapshot() {
+      return {
+        wave: Number(onlineIntermissionSkip.wave) || Number(game.wave) || 0,
+        count: Number(onlineIntermissionSkip.count) || 0,
+        required: Math.max(1, Number(onlineIntermissionSkip.required) || 2),
+        voted: { ...(onlineIntermissionSkip.voted || {}) },
+      };
+    }
+
     function requestOnlineIntermissionSkip() {
       if (!isOnlineMatchActive()) return false;
       if (game.state !== "playing" || game.waveState !== "intermission") return true;
       if (!onlineRoom.socket || onlineRoom.socket.readyState !== WebSocket.OPEN) return true;
 
-      onlineIntermissionSkip.localRequested = true;
+      markLocalOnlineIntermissionSkipVote();
 
       try {
         onlineRoom.socket.send(JSON.stringify({
           type: "intermission_skip_vote",
           wave: game.wave,
         }));
+        sendOnlinePlayerStateNow();
       } catch {}
 
       return true;
@@ -1782,7 +1828,8 @@
           right: false,
           dash: false,
           shoot: false,
-          special: false
+          special: false,
+          skipVoteWave: onlineIntermissionSkip.localRequested ? Number(onlineIntermissionSkip.wave || game.wave) : 0
         }));
       } catch {}
     }
@@ -2058,7 +2105,8 @@
           enemies: enemies.map(serializeOnlineEnemy),
           hostileProjectiles: projectiles.filter(p => p.enemyProjectile).map(serializeOnlineHostileProjectile),
           pulserRings: pulserRings.map(serializeOnlinePulserRing),
-          bossHazards: bossHazards.map(serializeOnlineBossHazard)
+          bossHazards: bossHazards.map(serializeOnlineBossHazard),
+          intermissionSkip: getOnlineIntermissionSkipStateForSnapshot()
         }));
       } catch {}
     }
@@ -2099,6 +2147,10 @@
       game.waveTimer = Number.isFinite(Number(msg.waveTimer)) ? Number(msg.waveTimer) : game.waveTimer;
       game.intermissionTimer = Number.isFinite(Number(msg.intermissionTimer)) ? Number(msg.intermissionTimer) : game.intermissionTimer;
       game.roomStartTimer = Number.isFinite(Number(msg.roomStartTimer)) ? Number(msg.roomStartTimer) : game.roomStartTimer;
+
+      if (game.waveState === "intermission" && msg.intermissionSkip) {
+        applyOnlineIntermissionSkipVoteState(msg.intermissionSkip);
+      }
 
       if (shouldGiveLocalOnlinePostBossReward(game.wave, game.waveState)) {
         giveLocalOnlinePostBossReward(game.wave);
@@ -2275,7 +2327,8 @@
           right: !player.downed && (keyDown("d") || keyDown("arrowright") || mobileInput.moveX > 0.15),
           dash: !player.downed && player.dashTimer > 0,
           shoot: !player.downed && (!!mouse.down || !!mobileInput.rightFire),
-          special: !player.downed && (!!mouse.rightDown || !!mobileInput.leftFire)
+          special: !player.downed && (!!mouse.rightDown || !!mobileInput.leftFire),
+          skipVoteWave: onlineIntermissionSkip.localRequested ? Number(onlineIntermissionSkip.wave || game.wave) : 0
         }));
       } catch {}
     }
@@ -2607,11 +2660,7 @@
       }
 
       if (msg.type === "intermission_skip_votes") {
-        onlineIntermissionSkip.wave = Number(msg.wave) || game.wave;
-        onlineIntermissionSkip.count = Number(msg.count) || 0;
-        onlineIntermissionSkip.required = Number(msg.required) || 2;
-        onlineIntermissionSkip.voted = msg.voted || {};
-        onlineIntermissionSkip.localRequested = !!onlineIntermissionSkip.voted?.[onlineRoom.playerId];
+        applyOnlineIntermissionSkipVoteState(msg);
 
         if (
           isOnlineHost() &&
