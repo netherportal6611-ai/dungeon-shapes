@@ -1189,6 +1189,27 @@
       onlineIntermissionSkip.localRequested = !!voted[onlineRoom.playerId];
     }
 
+    function mergeOnlineIntermissionSkipVotesFromPlayers(players = onlineRoom.players || {}) {
+      if (!isOnlineMatchActive() || game.state !== "playing" || game.waveState !== "intermission") return;
+
+      if (Number(onlineIntermissionSkip.wave) !== Number(game.wave)) {
+        resetOnlineIntermissionSkipVotes(game.wave);
+      }
+
+      for (const id of ["p1", "p2"]) {
+        const p = players[id];
+        if (!p || !p.connected) continue;
+        if (Number(p.skipVoteWave || 0) === Number(game.wave)) {
+          onlineIntermissionSkip.voted[id] = true;
+        }
+      }
+
+      const connectedIds = getOnlineConnectedPlayerIds();
+      onlineIntermissionSkip.required = Math.max(1, connectedIds.length || 2);
+      onlineIntermissionSkip.count = connectedIds.filter(id => onlineIntermissionSkip.voted[id]).length;
+      onlineIntermissionSkip.localRequested = !!onlineIntermissionSkip.voted[onlineRoom.playerId];
+    }
+
     function markLocalOnlineIntermissionSkipVote() {
       if (!onlineRoom.playerId) return;
       if (Number(onlineIntermissionSkip.wave) !== Number(game.wave)) {
@@ -1871,7 +1892,7 @@
     }
 
     function isReviveInputHeld() {
-      const keyboard = keyDown("e") || keyDown("keye");
+      const keyboard = keyDown("f") || keyDown("keyf");
       const mobile = !!mobileInput.revive;
       return keyboard || mobile;
     }
@@ -2148,16 +2169,19 @@
       game.intermissionTimer = Number.isFinite(Number(msg.intermissionTimer)) ? Number(msg.intermissionTimer) : game.intermissionTimer;
       game.roomStartTimer = Number.isFinite(Number(msg.roomStartTimer)) ? Number(msg.roomStartTimer) : game.roomStartTimer;
 
+      if (prevWaveState !== "intermission" && game.waveState === "intermission") {
+        resetOnlineIntermissionSkipVotes(game.wave);
+      }
+
       if (game.waveState === "intermission" && msg.intermissionSkip) {
         applyOnlineIntermissionSkipVoteState(msg.intermissionSkip);
+      }
+      if (game.waveState === "intermission") {
+        mergeOnlineIntermissionSkipVotesFromPlayers(onlineRoom.players);
       }
 
       if (shouldGiveLocalOnlinePostBossReward(game.wave, game.waveState)) {
         giveLocalOnlinePostBossReward(game.wave);
-      }
-
-      if (prevWaveState !== "intermission" && game.waveState === "intermission") {
-        resetOnlineIntermissionSkipVotes(game.wave);
       }
 
       if (prevWaveState === "intermission" && game.waveState === "combat") {
@@ -2621,6 +2645,7 @@
 
       if (msg.type === "players_state") {
         onlineRoom.players = msg.players || {};
+        mergeOnlineIntermissionSkipVotesFromPlayers(onlineRoom.players);
         return;
       }
 
@@ -9950,7 +9975,7 @@
 
           ctx.font = "900 12px Inter, Montserrat, Arial, sans-serif";
           ctx.fillStyle = "rgba(255,255,255,0.78)";
-          ctx.fillText("MANTENER E / BOTÓN PARA REVIVIR", cx, cy + 52);
+          ctx.fillText("MANTENER F / BOTÓN PARA REVIVIR", cx, cy + 52);
 
           drawRoundedRect(x, y, w, h, 8);
           ctx.fillStyle = "rgba(0,0,0,0.72)";
