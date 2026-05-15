@@ -1143,7 +1143,7 @@
       clearInputs();
     }
 
-    const GAME_VERSION_LABEL = "alpha-07";
+    const GAME_VERSION_LABEL = "alpha-08";
     const WS_LOCAL_URL = "wss://jsab-multiplayer.netherportal6611.workers.dev/ws";
 
     const onlineRoom = {
@@ -2391,6 +2391,7 @@
       if (Number.isFinite(Number(event.wave)) && Number(event.wave) !== Number(game.wave)) return;
       if (game.state !== "playing" || game.waveState !== "combat") return;
 
+      const eventAge = getOnlineEnemyAttackEventAge(event);
       const pos = Number.isFinite(Number(event.x)) && Number.isFinite(Number(event.y))
         ? denormalizeRoomPoint(event.x, event.y)
         : { x: Number(event.worldX) || player.x, y: Number(event.worldY) || player.y };
@@ -2427,7 +2428,8 @@
         if (lineKind === "sweep") {
           const phase2 = event.phase2 != null ? !!event.phase2 : attackName.includes("_p2");
           const reverse = event.reverse != null ? !!event.reverse : attackName.includes("_r");
-          spawnLinebreakerSweep(axis, phase2, reverse);
+          const hazard = spawnLinebreakerSweep(axis, phase2, reverse);
+          applyLinebreakerEventAge(hazard, eventAge);
         } else {
           const rr = room.getRect();
           const fallbackNorm = axis === "h" ? Number(event.y) : Number(event.x);
@@ -2435,16 +2437,54 @@
             ? Number(event.normPos)
             : (Number.isFinite(fallbackNorm) ? fallbackNorm : 0.5);
           const linePos = axis === "h" ? rr.y + normPos * rr.h : rr.x + normPos * rr.w;
-          spawnLinebreakerCut(axis, linePos, {
+          const hazard = spawnLinebreakerCut(axis, linePos, {
             color: event.color || "#f0024e",
             width: Number(event.width) || 76,
             warningTime: Number(event.warningTime) || 0.7,
             activeTime: Number(event.activeTime) || 0.3,
             fadeTime: Number(event.fadeTime) || 0.18,
           });
+          applyLinebreakerEventAge(hazard, eventAge);
         }
         return;
       }
+    }
+
+    function getOnlineEnemyAttackEventAge(event) {
+      const sentAt = Number(event?.sentAt);
+      if (!Number.isFinite(sentAt) || sentAt <= 0) return 0;
+      const age = (Date.now() - sentAt) / 1000;
+      return Math.max(0, Math.min(4, age));
+    }
+
+    function applyLinebreakerEventAge(hazard, age) {
+      if (!hazard || hazard.type !== "linebreakerLaser" || !Number.isFinite(Number(age)) || age <= 0) return;
+      const warning = Math.max(0.001, Number(hazard.warningTime) || 0.7);
+      const active = Math.max(0.001, Number(hazard.activeTime) || 0.3);
+      const fade = Math.max(0.001, Number(hazard.fadeTime) || 0.18);
+
+      if (age < warning) {
+        hazard.phase = "warning";
+        hazard.timer = age;
+        return;
+      }
+
+      if (age < warning + active) {
+        hazard.phase = "active";
+        hazard.timer = age - warning;
+        hazard.hitTimer = 0;
+        hazard.remoteHitTimer = 0;
+        return;
+      }
+
+      if (age < warning + active + fade) {
+        hazard.phase = "fade";
+        hazard.timer = age - warning - active;
+        return;
+      }
+
+      const idx = bossHazards.indexOf(hazard);
+      if (idx >= 0) bossHazards.splice(idx, 1);
     }
 
     function clearGuestSyncedHostileAttacks() {
@@ -6424,7 +6464,7 @@
       const min = isH ? r.y + margin : r.x + margin;
       const max = isH ? r.y + r.h - margin : r.x + r.w - margin;
       const safePos = clamp(pos, min, max);
-      bossHazards.push({
+      const hazard = {
         type: "linebreakerLaser",
         axis,
         pos: safePos,
@@ -6439,7 +6479,8 @@
         phase: "warning",
         hitTimer: 0,
         remoteHitTimer: 0,
-      });
+      };
+      bossHazards.push(hazard);
       capLinebreakerHazards(14);
       const normPos = isH
         ? (r.h > 0 ? (safePos - r.y) / r.h : 0.5)
@@ -6457,6 +6498,7 @@
         activeTime: opts.activeTime || 0.3,
         fadeTime: opts.fadeTime || 0.18,
       });
+      return hazard;
     }
 
     function spawnLinebreakerSweep(axis, phase2 = false, forcedReverse = null) {
@@ -6466,7 +6508,7 @@
       const start = isH ? -screenPad : -screenPad;
       const end = isH ? canvas.height + screenPad : canvas.width + screenPad;
       const reverse = forcedReverse === null ? Math.random() < 0.5 : !!forcedReverse;
-      bossHazards.push({
+      const hazard = {
         type: "linebreakerLaser",
         axis,
         pos: reverse ? end : start,
@@ -6482,7 +6524,8 @@
         phase: "warning",
         hitTimer: 0,
         remoteHitTimer: 0,
-      });
+      };
+      bossHazards.push(hazard);
       capLinebreakerHazards(14);
       sendOnlineEnemyAttackEvent({
         attack: `linebreaker_laser_sweep_${axis}_${reverse ? "r" : "f"}_${phase2 ? "p2" : "p1"}`,
@@ -6493,6 +6536,7 @@
         phase2: !!phase2,
         reverse,
       });
+      return hazard;
     }
 
     function getLinebreakerHazardPos(hazard) {
