@@ -548,8 +548,7 @@
     }
 
     #room-code-cancel {
-      background: linear-gradient(180deg, rgba(18,19,30,0.96), rgba(6,7,13,0.98));
-      border-color: rgba(255,255,255,0.22);
+      display: none;
     }
 
     #room-code-join:active,
@@ -1143,7 +1142,7 @@
       clearInputs();
     }
 
-    const GAME_VERSION_LABEL = "alpha-08";
+    const GAME_VERSION_LABEL = "alpha-09";
     const WS_LOCAL_URL = "wss://jsab-multiplayer.netherportal6611.workers.dev/ws";
 
     const onlineRoom = {
@@ -10243,6 +10242,515 @@ if (player.stamina <= 0) return false;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillText(label, x + w / 2, y + h / 2 + 1);
+    }
+
+    /* UI FULLSCREEN POLISH alpha-09: menús integrados, consistencia visual e idioma español. */
+    function getMenuLeftPanelRect() {
+      const portrait = isPortraitMenuLayout();
+      const compact = isCompactLandscapeMenuLayout();
+      if (portrait) {
+        const w = Math.min(canvas.width - 40, 460);
+        return { x: canvas.width / 2 - w / 2, y: 54, w, h: Math.min(canvas.height - 108, 560) };
+      }
+      if (compact) {
+        const w = Math.min(420, canvas.width * 0.46);
+        return { x: 48, y: 64, w, h: canvas.height - 128 };
+      }
+      const w = Math.min(520, Math.max(430, canvas.width * 0.30));
+      return { x: Math.max(96, canvas.width * 0.065), y: 96, w, h: canvas.height - 192 };
+    }
+
+    function getMenuRoomPanelRect() {
+      const compact = isCompactLandscapeMenuLayout();
+      const marginX = compact ? 88 : Math.max(128, canvas.width * 0.13);
+      const marginY = compact ? 54 : 92;
+      return {
+        x: marginX,
+        y: marginY,
+        w: canvas.width - marginX * 2,
+        h: canvas.height - marginY * 2,
+      };
+    }
+
+    function getMenuButtonRects() {
+      const p = getMenuLeftPanelRect();
+      const compact = isCompactLandscapeMenuLayout();
+      const w = Math.min(p.w - 58, compact ? 300 : 360);
+      const h = compact ? 44 : 56;
+      const gap = 14;
+      const x = p.x + 34;
+      const y = p.y + p.h - h * 3 - gap * 2 - 36;
+      return {
+        play: { x, y, w, h },
+        multiplayer: { x, y: y + h + gap, w, h },
+        settings: { x, y: y + (h + gap) * 2, w, h },
+      };
+    }
+
+    function getMultiplayerButtonRects() {
+      const p = getMenuLeftPanelRect();
+      const compact = isCompactLandscapeMenuLayout();
+      const w = Math.min(p.w - 58, compact ? 310 : 370);
+      const h = compact ? 44 : 56;
+      const gap = 14;
+      const x = p.x + 34;
+      const y = p.y + p.h - h * 3 - gap * 2 - 36;
+      return {
+        create: { x, y, w, h },
+        join: { x, y: y + h + gap, w, h },
+        back: { x, y: y + (h + gap) * 2, w, h },
+      };
+    }
+
+    function getJoinRoomButtonRects() {
+      const p = getMenuRoomPanelRect();
+      const w = Math.min(430, p.w * 0.42);
+      const h = 54;
+      return { cancel: { x: p.x + p.w / 2 - w / 2, y: p.y + p.h - 92, w, h } };
+    }
+
+    function getRoomLobbyButtonRects() {
+      const p = getMenuRoomPanelRect();
+      const w = Math.min(460, p.w * 0.46);
+      const h = 54;
+      const gap = 16;
+      const x = p.x + p.w / 2 - w / 2;
+      const y = p.y + p.h - h * 2 - gap - 54;
+      return { start: { x, y, w, h }, cancel: { x, y: y + h + gap, w, h } };
+    }
+
+    function getSettingsPanelRect() {
+      const marginX = canvas.width < 900 ? 32 : Math.max(86, canvas.width * 0.08);
+      const marginY = canvas.height < 620 ? 28 : Math.max(54, canvas.height * 0.07);
+      return { x: marginX, y: marginY, w: canvas.width - marginX * 2, h: canvas.height - marginY * 2 };
+    }
+
+    function getSettingsLayout(panel = getSettingsPanelRect()) {
+      const virtualW = 720;
+      const virtualH = 430;
+      const scale = Math.min(1.25, (panel.w - 80) / virtualW, (panel.h - 70) / virtualH);
+      const x = panel.x + (panel.w - virtualW * scale) / 2;
+      const y = panel.y + (panel.h - virtualH * scale) / 2;
+      return {
+        panel, virtualW, virtualH, scale, x, y,
+        rects: {
+          closeX: { x: 670, y: 16, w: 34, h: 34 },
+          wasd: { x: 40, y: 96, w: 300, h: 42 },
+          cursor: { x: 356, y: 96, w: 324, h: 42 },
+          mobileToggle: { x: 40, y: 184, w: 300, h: 42 },
+          fieldMinus: { x: 40, y: 278, w: 124, h: 38 },
+          fieldPlus: { x: 278, y: 278, w: 124, h: 38 },
+          opacityMinus: { x: 438, y: 278, w: 124, h: 38 },
+          opacityPlus: { x: 556, y: 278, w: 124, h: 38 },
+          command: { x: 40, y: 364, w: 260, h: 38 },
+          apply: { x: 314, y: 364, w: 110, h: 38 },
+          fullscreen: { x: 438, y: 364, w: 242, h: 38 },
+        }
+      };
+    }
+
+    function drawMenuBackground() {
+      const bg = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
+      bg.addColorStop(0, "#020207");
+      bg.addColorStop(0.48, "#080813");
+      bg.addColorStop(1, "#030205");
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.save();
+      ctx.globalAlpha = 0.13;
+      ctx.strokeStyle = "rgba(236,0,116,0.24)";
+      ctx.lineWidth = 1;
+      const grid = 64;
+      for (let x = (game.time * 3) % grid; x < canvas.width + grid; x += grid) {
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
+      }
+      for (let y = 0; y < canvas.height + grid; y += grid) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
+      }
+      ctx.restore();
+
+      ctx.save();
+      ctx.globalAlpha = 0.20;
+      ctx.strokeStyle = "rgba(236,0,116,0.44)";
+      ctx.lineWidth = 2;
+      const cx = canvas.width * 0.58;
+      const cy = canvas.height * 0.56;
+      for (let i = 0; i < 5; i++) {
+        ctx.beginPath();
+        ctx.arc(cx, cy, 170 + i * 120, -0.35, Math.PI * 1.08);
+        ctx.stroke();
+      }
+      ctx.restore();
+
+      ctx.save();
+      ctx.globalAlpha = 0.18;
+      ctx.fillStyle = "rgba(236,0,116,0.32)";
+      ctx.beginPath();
+      ctx.moveTo(canvas.width * 0.08, canvas.height);
+      ctx.lineTo(canvas.width * 0.20, canvas.height);
+      ctx.lineTo(canvas.width * 0.36, 0);
+      ctx.lineTo(canvas.width * 0.30, 0);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+
+      const vignette = ctx.createRadialGradient(canvas.width / 2, canvas.height / 2, 80, canvas.width / 2, canvas.height / 2, Math.max(canvas.width, canvas.height) * 0.72);
+      vignette.addColorStop(0, "rgba(0,0,0,0)");
+      vignette.addColorStop(1, "rgba(0,0,0,0.82)");
+      ctx.fillStyle = vignette;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+
+    function drawFullscreenSurface(x, y, w, h, opts = {}) {
+      ctx.save();
+      const r = opts.radius || 10;
+      drawRoundedRect(x, y, w, h, r);
+      const g = ctx.createLinearGradient(x, y, x + w, y + h);
+      g.addColorStop(0, opts.strong ? "rgba(17,17,28,0.82)" : "rgba(12,13,22,0.54)");
+      g.addColorStop(1, "rgba(5,6,12,0.80)");
+      ctx.fillStyle = g;
+      ctx.fill();
+      ctx.strokeStyle = opts.accent === "cyan" ? "rgba(66,223,255,0.38)" : "rgba(236,0,116,0.45)";
+      ctx.lineWidth = opts.lineWidth || 1.5;
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function drawMenuPanelDecor(panel) {
+      drawFullscreenSurface(panel.x, panel.y, panel.w, panel.h, { strong: false, radius: 6, lineWidth: 1.5 });
+      ctx.save();
+      const accent = ctx.createLinearGradient(panel.x + 24, panel.y + 28, panel.x + 24, panel.y + panel.h * 0.38);
+      accent.addColorStop(0, game.ruby);
+      accent.addColorStop(1, "#42dfff");
+      ctx.fillStyle = accent;
+      drawRoundedRect(panel.x + 28, panel.y + 28, 6, Math.max(120, panel.h * 0.24), 4);
+      ctx.fill();
+      ctx.globalAlpha = 0.10;
+      ctx.strokeStyle = "rgba(255,255,255,0.55)";
+      for (let i = 0; i < 8; i++) {
+        const px = panel.x + panel.w * (0.16 + i * 0.12);
+        ctx.beginPath();
+        ctx.moveTo(px, panel.y + 24);
+        ctx.lineTo(px - panel.h * 0.28, panel.y + panel.h - 24);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    function drawMenuButton(rect, label, primary = false) {
+      ctx.save();
+      const hovered = pointInRect(mouse.x, mouse.y, rect);
+      const r = 8;
+      drawRoundedRect(rect.x, rect.y, rect.w, rect.h, r);
+      const g = ctx.createLinearGradient(rect.x, rect.y, rect.x + rect.w, rect.y + rect.h);
+      if (primary) {
+        g.addColorStop(0, hovered ? "#ff1b91" : "#ec0074");
+        g.addColorStop(1, "#62002f");
+      } else {
+        g.addColorStop(0, hovered ? "rgba(23,21,34,0.98)" : "rgba(12,13,22,0.92)");
+        g.addColorStop(1, "rgba(5,6,12,0.96)");
+      }
+      ctx.fillStyle = g;
+      ctx.fill();
+      ctx.strokeStyle = primary ? "rgba(255,255,255,0.18)" : "rgba(66,223,255,0.36)";
+      ctx.lineWidth = primary ? 2 : 1.8;
+      ctx.stroke();
+      ctx.font = `950 ${rect.h >= 54 ? 18 : 15}px Inter, Segoe UI, Arial, sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "rgba(255,255,255,0.94)";
+      ctx.fillText(label, rect.x + rect.w / 2, rect.y + rect.h / 2 + 1);
+      if (primary) {
+        ctx.globalAlpha = 0.42;
+        ctx.fillStyle = "#fff";
+        ctx.beginPath();
+        ctx.moveTo(rect.x + rect.w - 38, rect.y + rect.h / 2 - 7);
+        ctx.lineTo(rect.x + rect.w - 23, rect.y + rect.h / 2);
+        ctx.lineTo(rect.x + rect.w - 38, rect.y + rect.h / 2 + 7);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    function drawMenuKicker(text, x, y, align = "left") {
+      ctx.save();
+      ctx.font = "950 11px Inter, Segoe UI, Arial, sans-serif";
+      ctx.fillStyle = "#42dfff";
+      ctx.textAlign = align;
+      ctx.textBaseline = "middle";
+      ctx.fillText(text, x, y);
+      ctx.restore();
+    }
+
+    function drawMenuTitle(lines, x, y, align = "left", size = 58) {
+      ctx.save();
+      ctx.textAlign = align;
+      ctx.textBaseline = "middle";
+      ctx.font = `950 ${size}px Inter, Segoe UI, Arial, sans-serif`;
+      ctx.fillStyle = "rgba(255,255,255,0.96)";
+      ctx.fillText(lines[0], x, y);
+      if (lines[1]) {
+        ctx.fillStyle = game.ruby;
+        ctx.fillText(lines[1], x, y + size * 0.92);
+      }
+      ctx.restore();
+    }
+
+    function drawMainMenu() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      drawMenuBackground();
+      const panel = (game.menuMode === "joinRoom" || game.menuMode === "roomLobby") ? getMenuRoomPanelRect() : getMenuLeftPanelRect();
+      drawMenuPanelDecor(panel);
+      const portrait = isPortraitMenuLayout();
+      const titleX = portrait ? panel.x + panel.w / 2 : panel.x + 60;
+      const titleY = panel.y + (portrait ? 82 : 110);
+      const align = portrait ? "center" : "left";
+
+      if (game.menuMode === "main") {
+        drawMenuTitle(["DUNGEON", "SHAPES"], titleX, titleY, align, portrait ? 42 : 60);
+        ctx.save();
+        ctx.font = "900 12px Inter, Segoe UI, Arial, sans-serif";
+        ctx.fillStyle = "rgba(255,255,255,0.50)";
+        ctx.textAlign = align;
+        ctx.fillText("DASH / DODGE / SURVIVE", titleX, titleY + (portrait ? 94 : 126));
+        ctx.fillStyle = "#42dfff";
+        ctx.fillText("ROGUELIKE ROOM BASE", titleX, titleY + (portrait ? 118 : 150));
+        ctx.restore();
+        const b = getMenuButtonRects();
+        drawMenuButton(b.play, "JUGAR", true);
+        drawMenuButton(b.multiplayer, "MULTIJUGADOR", false);
+        drawMenuButton(b.settings, "AJUSTES", false);
+        drawMenuPreview();
+      } else if (game.menuMode === "multiplayer") {
+        drawMultiplayerMenu(panel);
+      } else if (game.menuMode === "joinRoom") {
+        drawJoinRoomMenu(panel);
+      } else if (game.menuMode === "roomLobby") {
+        drawRoomLobbyMenu(panel);
+      }
+
+      drawVersionWatermark();
+      if (!game.settingsOpen) syncSettingsCheatBox();
+      drawSettingsPanel();
+    }
+
+    function drawMenuPreview() {
+      if (isPortraitMenuLayout()) return;
+      const left = getMenuLeftPanelRect();
+      const x = left.x + left.w + 90;
+      const y = Math.max(116, canvas.height * 0.23);
+      const w = canvas.width - x - Math.max(86, canvas.width * 0.06);
+      const h = Math.min(430, canvas.height * 0.48);
+      drawFullscreenSurface(x, y, w, h, { accent: "ruby", radius: 10, lineWidth: 2 });
+      ctx.save();
+      ctx.fillStyle = "rgba(236,0,116,0.18)";
+      ctx.fillRect(x, y, w, 46);
+      ctx.font = "900 12px Inter, Segoe UI, Arial, sans-serif";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "rgba(255,255,255,0.70)";
+      ctx.textAlign = "left";
+      ctx.fillText("VISTA DE ARENA", x + 24, y + 23);
+      ctx.fillStyle = "#42dfff";
+      ctx.textAlign = "right";
+      ctx.fillText("SIMULACIÓN", x + w - 24, y + 23);
+      ctx.globalAlpha = 0.16;
+      ctx.strokeStyle = "rgba(255,255,255,0.10)";
+      for (let gx = x + 28; gx < x + w; gx += 72) { ctx.beginPath(); ctx.moveTo(gx, y + 46); ctx.lineTo(gx, y + h - 18); ctx.stroke(); }
+      for (let gy = y + 90; gy < y + h; gy += 60) { ctx.beginPath(); ctx.moveTo(x + 18, gy); ctx.lineTo(x + w - 18, gy); ctx.stroke(); }
+      ctx.globalAlpha = 1;
+      const px = x + w * 0.50, py = y + h * 0.58;
+      ctx.strokeStyle = "rgba(66,223,255,0.28)";
+      ctx.lineWidth = 12;
+      ctx.lineCap = "round";
+      ctx.beginPath(); ctx.moveTo(px - w * 0.25, py + h * 0.12); ctx.quadraticCurveTo(px - w * 0.08, py - h * 0.10, px, py); ctx.stroke();
+      ctx.translate(px, py); ctx.rotate(Math.PI / 4 + game.time * 0.65); ctx.fillStyle = "#42dfff"; ctx.fillRect(-14, -14, 28, 28);
+      ctx.restore();
+      ctx.save();
+      ctx.translate(x + w * 0.73, y + h * 0.43); ctx.rotate(Math.PI / 4 + game.time); ctx.fillStyle = game.ruby; ctx.fillRect(-18, -18, 36, 36);
+      ctx.restore();
+    }
+
+    function drawMultiplayerMenu(panel) {
+      syncRoomCodeBox();
+      const x = isPortraitMenuLayout() ? panel.x + panel.w / 2 : panel.x + 62;
+      const align = isPortraitMenuLayout() ? "center" : "left";
+      drawMenuKicker("MODO ONLINE", x, panel.y + 62, align);
+      drawMenuTitle(["MULTI", "JUGADOR"], x, panel.y + 108, align, isPortraitMenuLayout() ? 42 : 52);
+      ctx.save();
+      ctx.font = "900 12px Inter, Segoe UI, Arial, sans-serif";
+      ctx.textAlign = align;
+      ctx.fillStyle = "rgba(255,255,255,0.52)";
+      ctx.fillText("Creá una sala o entrá con código", x, panel.y + 220);
+      ctx.fillStyle = "#42dfff";
+      ctx.fillText("WEBSOCKET · CLOUDFLARE", x, panel.y + 248);
+      ctx.restore();
+      const b = getMultiplayerButtonRects();
+      drawMenuButton(b.create, "CREAR SALA", true);
+      drawMenuButton(b.join, "UNIRSE A SALA", false);
+      drawMenuButton(b.back, "VOLVER", false);
+    }
+
+    function drawJoinRoomMenu(panel) {
+      syncRoomCodeBox();
+      const cx = panel.x + panel.w / 2;
+      drawMenuKicker("CÓDIGO DE SALA", cx, panel.y + 78, "center");
+      drawMenuTitle(["UNIRSE", "A SALA"], cx, panel.y + 130, "center", 52);
+      ctx.save();
+      ctx.font = "900 13px Inter, Segoe UI, Arial, sans-serif";
+      ctx.fillStyle = "rgba(255,255,255,0.54)";
+      ctx.textAlign = "center";
+      ctx.fillText("Pedile el código al host y entrá al lobby", cx, panel.y + 252);
+      if (game.multiplayer.joinError) {
+        ctx.fillStyle = "#ff5572";
+        ctx.fillText(game.multiplayer.joinError, cx, panel.y + panel.h - 118);
+      }
+      ctx.restore();
+      drawMenuButton(getJoinRoomButtonRects().cancel, "VOLVER", false);
+    }
+
+    function drawRoomLobbyMenu(panel) {
+      syncRoomCodeBox();
+      const mp = game.multiplayer;
+      const cx = panel.x + panel.w / 2;
+      drawMenuKicker(mp.isHost ? "SALA DEL HOST" : "SALA DEL INVITADO", cx, panel.y + 72, "center");
+      ctx.save();
+      ctx.textAlign = "center";
+      ctx.font = "900 12px Inter, Segoe UI, Arial, sans-serif";
+      ctx.fillStyle = "rgba(255,255,255,0.52)";
+      ctx.fillText("CÓDIGO DE SALA", cx, panel.y + 112);
+      ctx.font = "950 66px Inter, Segoe UI, Arial, sans-serif";
+      ctx.fillStyle = game.ruby;
+      ctx.fillText(mp.roomCode || "----", cx, panel.y + 178);
+      ctx.restore();
+      const cardW = Math.min(560, panel.w - 180);
+      const cardX = cx - cardW / 2;
+      drawPlayerSlotCard(cardX, panel.y + 230, cardW, 70, mp.isHost ? "VOS · HOST" : "JUGADOR 1 · HOST", mp.isHost ? mp.localPlayerName : mp.remotePlayerName, true, false);
+      drawPlayerSlotCard(cardX, panel.y + 318, cardW, 70, mp.isHost ? "JUGADOR 2 · INVITADO" : "VOS · INVITADO", mp.isHost ? mp.remotePlayerName : mp.localPlayerName, !!mp.remotePlayerName && mp.remotePlayerName !== "Esperando jugador...", true);
+      const b = getRoomLobbyButtonRects();
+      if (mp.isHost) drawMenuButton(b.start, "EMPEZAR", true);
+      drawMenuButton(b.cancel, mp.isHost ? "CANCELAR SALA" : "SALIR", false);
+    }
+
+    function drawPlayerSlotCard(x, y, w, h, label, name, active, cyan = false) {
+      ctx.save();
+      drawFullscreenSurface(x, y, w, h, { accent: cyan ? "cyan" : "ruby", radius: 8, lineWidth: active ? 2 : 1 });
+      ctx.fillStyle = active ? (cyan ? "#42dfff" : game.ruby) : "rgba(255,255,255,0.20)";
+      drawRoundedRect(x + 12, y + 14, 7, h - 28, 4);
+      ctx.fill();
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.font = "950 10px Inter, Segoe UI, Arial, sans-serif";
+      ctx.fillStyle = active ? (cyan ? "#42dfff" : game.ruby) : "rgba(255,255,255,0.35)";
+      ctx.fillText(label, x + 34, y + 20);
+      ctx.font = "950 18px Inter, Segoe UI, Arial, sans-serif";
+      ctx.fillStyle = active ? "rgba(255,255,255,0.90)" : "rgba(255,255,255,0.42)";
+      ctx.fillText(name || "Esperando jugador...", x + 34, y + h / 2 + 13);
+      ctx.beginPath();
+      ctx.arc(x + w - 24, y + 24, 5, 0, Math.PI * 2);
+      ctx.fillStyle = active ? "#00ffbb" : "rgba(255,255,255,0.20)";
+      ctx.fill();
+      ctx.restore();
+    }
+
+    function syncRoomCodeBox() {
+      if (!roomCodeBox) return;
+      if (game.state !== "menu" || game.menuMode !== "joinRoom") {
+        roomCodeBox.style.display = "none";
+        return;
+      }
+      const panel = getMenuRoomPanelRect();
+      const w = Math.min(470, panel.w * 0.50);
+      const inputW = Math.min(230, w * 0.52);
+      const x = panel.x + panel.w / 2 - w / 2;
+      const y = panel.y + 320;
+      const rect = canvas.getBoundingClientRect();
+      const sx = rect.width / Math.max(1, canvas.width);
+      const sy = rect.height / Math.max(1, canvas.height);
+      const scale = Math.min(sx, sy);
+      roomCodeBox.style.left = `${Math.round(rect.left + x * sx)}px`;
+      roomCodeBox.style.top = `${Math.round(rect.top + y * sy)}px`;
+      roomCodeBox.style.width = `${Math.round(w * sx)}px`;
+      roomCodeBox.style.transformOrigin = "top left";
+      roomCodeBox.style.transform = `scale(${scale})`;
+      roomCodeInput.style.width = `${inputW}px`;
+      roomCodeBox.style.display = "flex";
+    }
+
+    function drawSettingsIcon() {
+      if (mobileInput.enabled) return;
+      const btn = getSettingsButtonRect();
+      const cx = btn.x + btn.w / 2, cy = btn.y + btn.h / 2;
+      ctx.save();
+      drawRoundedRect(btn.x, btn.y, btn.w, btn.h, 8);
+      ctx.fillStyle = "rgba(8,9,15,0.90)";
+      ctx.fill();
+      ctx.strokeStyle = "rgba(236,0,116,0.78)";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.translate(cx, cy);
+      ctx.rotate(game.time * 0.25);
+      ctx.strokeStyle = "rgba(255,255,255,0.82)";
+      ctx.lineWidth = 2.4;
+      ctx.lineCap = "round";
+      ctx.beginPath(); ctx.arc(0, 0, 7, 0, Math.PI * 2); ctx.stroke();
+      for (let i = 0; i < 8; i++) {
+        const a = i * Math.PI / 4;
+        ctx.beginPath(); ctx.moveTo(Math.cos(a) * 10, Math.sin(a) * 10); ctx.lineTo(Math.cos(a) * 13, Math.sin(a) * 13); ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    function drawSettingsPanel() {
+      if (!game.settingsOpen) {
+        syncSettingsCheatBox();
+        if (document.activeElement === settingsCheatInput) settingsCheatInput.blur();
+        return;
+      }
+      const panel = getSettingsPanelRect();
+      const layout = getSettingsLayout(panel);
+      ctx.save();
+      drawMenuBackground();
+      drawMenuPanelDecor(panel);
+      ctx.translate(layout.x, layout.y);
+      ctx.scale(layout.scale, layout.scale);
+      const r = layout.rects;
+      drawMenuKicker("AJUSTES", layout.virtualW / 2, 30, "center");
+      drawMenuTitle(["CONFIGURACIÓN"], layout.virtualW / 2, 72, "center", 36);
+      drawSettingsCloseButton(r.closeX.x, r.closeX.y, r.closeX.w, r.closeX.h, "×");
+      drawSettingsSectionTitle("CONTROLES", 40, 76);
+      drawDashOption(r.wasd.x, r.wasd.y, r.wasd.w, r.wasd.h, "Dash por WASD", game.dashMode === "wasd");
+      drawDashOption(r.cursor.x, r.cursor.y, r.cursor.w, r.cursor.h, "Dash por cursor", game.dashMode === "cursor");
+      drawSettingsSectionTitle("PANTALLA Y CELULAR", 40, 166);
+      drawToggleOption(r.mobileToggle.x, r.mobileToggle.y, r.mobileToggle.w, r.mobileToggle.h, game.mobileControlsEnabled ? "Controles móviles: ON" : "Controles móviles: OFF", game.mobileControlsEnabled);
+      drawSettingsSectionTitle("TAMAÑO DEL CAMPO", 40, 256);
+      drawFieldScaleButton(r.fieldMinus.x, r.fieldMinus.y, r.fieldMinus.w, r.fieldMinus.h, "MENOS", game.ruby);
+      drawFieldScaleButton(r.fieldPlus.x, r.fieldPlus.y, r.fieldPlus.w, r.fieldPlus.h, "MÁS", game.ruby);
+      ctx.font = "950 20px Inter, Segoe UI, Arial, sans-serif"; ctx.fillStyle = game.ruby; ctx.textAlign = "center"; ctx.fillText(`${Math.round(game.arenaScale * 100)}%`, 222, 302);
+      drawSettingsSectionTitle("OPACIDAD UI", 438, 256);
+      drawFieldScaleButton(r.opacityMinus.x, r.opacityMinus.y, r.opacityMinus.w, r.opacityMinus.h, "BAJAR", game.ruby);
+      drawFieldScaleButton(r.opacityPlus.x, r.opacityPlus.y, r.opacityPlus.w, r.opacityPlus.h, "SUBIR", game.ruby);
+      ctx.fillStyle = game.ruby; ctx.fillText(`${Math.round(game.touchControlsOpacity * 100)}%`, 500, 302);
+      drawSettingsSectionTitle("COMANDO", 40, 346);
+      drawFieldScaleButton(r.apply.x, r.apply.y, r.apply.w, r.apply.h, "APLICAR", game.ruby);
+      drawFieldScaleButton(r.fullscreen.x, r.fullscreen.y, r.fullscreen.w, r.fullscreen.h, "PANTALLA COMPLETA", game.ruby);
+      ctx.restore();
+      syncSettingsCheatBox(panel);
+    }
+
+    function drawSettingsCloseButton(x, y, w, h, label) {
+      drawRoundedRect(x, y, w, h, h / 2);
+      ctx.fillStyle = "rgba(13,14,23,0.96)";
+      ctx.fill();
+      ctx.strokeStyle = "rgba(236,0,116,0.78)";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.font = "950 21px Inter, Segoe UI, Arial, Helvetica, sans-serif";
+      ctx.fillStyle = "rgba(255,255,255,0.92)";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(label || "X", x + w / 2, y + h / 2 - 1);
     }
 
     function drawGameOverText() {
