@@ -1143,7 +1143,7 @@
       clearInputs();
     }
 
-    const GAME_VERSION_LABEL = "alpha-05";
+    const GAME_VERSION_LABEL = "alpha-06";
     const WS_LOCAL_URL = "wss://jsab-multiplayer.netherportal6611.workers.dev/ws";
 
     const onlineRoom = {
@@ -2454,9 +2454,6 @@
       if (!isOnlineGuest()) return;
 
       const hostileProjectiles = Array.isArray(msg.hostileProjectiles) ? msg.hostileProjectiles : [];
-      const linebreakerHazards = Array.isArray(msg.bossHazards)
-        ? msg.bossHazards.filter(h => h && h.type === "linebreakerLaser")
-        : [];
 
       // Proyectiles enemigos: se reemplazan siempre por el snapshot actual del host.
       // Si el host manda vacío, significa que ya no existen y no deben quedar hitboxes fantasma.
@@ -2467,19 +2464,7 @@
         projectiles.push(deserializeOnlineHostileProjectile(snap));
       }
 
-      // Linebreaker tiene lasers largos y posicionales: se respaldan por snapshot para que
-      // host e invitado terminen viendo el mismo patrón aunque un evento llegue tarde.
-      // Si llega un snapshot vacío viejo justo después del evento, conservamos el evento local.
-      if (linebreakerHazards.length > 0) {
-        for (let i = bossHazards.length - 1; i >= 0; i--) {
-          if (bossHazards[i]?.type === "linebreakerLaser") bossHazards.splice(i, 1);
-        }
-        for (const snap of linebreakerHazards) {
-          bossHazards.push(deserializeOnlineBossHazard(snap));
-        }
-      }
-
-      // Anillos y hazards cortos ahora se reproducen por enemy_attack_event.
+      // Anillos, lasers y hazards cortos ahora se reproducen por enemy_attack_event.
       // No los rearmamos desde el snapshot porque eso mezclaba dibujos viejos con hitboxes nuevas.
       if ((msg.waveState || game.waveState) !== "combat") {
         pulserRings.length = 0;
@@ -6446,6 +6431,7 @@
         timer: 0,
         phase: "warning",
         hitTimer: 0,
+        remoteHitTimer: 0,
       });
       capLinebreakerHazards(14);
       const normPos = isH
@@ -6486,6 +6472,7 @@
         timer: 0,
         phase: "warning",
         hitTimer: 0,
+        remoteHitTimer: 0,
       });
       capLinebreakerHazards(14);
       sendOnlineEnemyAttackEvent({
@@ -6503,15 +6490,19 @@
       return lerp(hazard.fromPos, hazard.toPos, t);
     }
 
-    function linebreakerLaserHitsPlayer(hazard) {
+    function linebreakerLaserHitsPoint(hazard, x, y, hitRadius = getPlayerHitRadius()) {
       const pos = getLinebreakerHazardPos(hazard);
       const screenPad = 120;
       const ax = hazard.axis === "h" ? -screenPad : pos;
       const ay = hazard.axis === "h" ? pos : -screenPad;
       const bx = hazard.axis === "h" ? canvas.width + screenPad : pos;
       const by = hazard.axis === "h" ? pos : canvas.height + screenPad;
-      const dist = distancePointToSegment(player.x, player.y, ax, ay, bx, by);
-      return dist <= getPlayerHitRadius() + getDangerLineHitWidth(hazard.width) / 2;
+      const dist = distancePointToSegment(x, y, ax, ay, bx, by);
+      return dist <= hitRadius + getDangerLineHitWidth(hazard.width) / 2;
+    }
+
+    function linebreakerLaserHitsPlayer(hazard) {
+      return linebreakerLaserHitsPoint(hazard, player.x, player.y);
     }
 
     function getSafeRandomPulseCenters(count) {
@@ -6982,15 +6973,27 @@
           if (hazard.toPos != null && !Number.isFinite(hazard.toPos)) hazard.toPos = null;
           hazard.timer += dt;
           hazard.hitTimer = Math.max(0, (hazard.hitTimer || 0) - dt);
+          hazard.remoteHitTimer = Math.max(0, (hazard.remoteHitTimer || 0) - dt);
 
           if (hazard.phase === "warning" && hazard.timer >= hazard.warningTime) {
             hazard.phase = "active";
             hazard.timer = 0;
             hazard.hitTimer = 0;
+            hazard.remoteHitTimer = 0;
           } else if (hazard.phase === "active") {
-            if (hazard.hitTimer <= 0 && !player.invincible && linebreakerLaserHitsPlayer(hazard)) {
+            if (hazard.hitTimer <= 0 && !player.downed && !isPlayerDamageInvulnerable() && linebreakerLaserHitsPlayer(hazard)) {
               hazard.hitTimer = 0.55;
               damagePlayer();
+            }
+            if (isOnlineHost() && hazard.remoteHitTimer <= 0) {
+              const remote = onlineRoom.players?.p2;
+              const remotePos = getRemoteOnlinePlayerWorldPositionForHost();
+              if (remote && remote.connected && remotePos && !isRemoteOnlinePlayerDamageInvulnerable(remote) &&
+                  linebreakerLaserHitsPoint(hazard, remotePos.x, remotePos.y)) {
+                if (sendOnlinePlayerDamage("p2", 1, "linebreaker_laser")) {
+                  hazard.remoteHitTimer = 0.55;
+                }
+              }
             }
             if (hazard.timer >= hazard.activeTime) {
               hazard.phase = "fade";
