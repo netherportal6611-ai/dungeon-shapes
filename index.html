@@ -1143,7 +1143,7 @@
       clearInputs();
     }
 
-    const GAME_VERSION_LABEL = "alpha-06";
+    const GAME_VERSION_LABEL = "alpha-07";
     const WS_LOCAL_URL = "wss://jsab-multiplayer.netherportal6611.workers.dev/ws";
 
     const onlineRoom = {
@@ -2420,13 +2420,20 @@
         return;
       }
 
-      if (event.attack === "linebreaker_laser") {
-        const axis = event.axis === "v" ? "v" : "h";
-        if (event.lineKind === "sweep") {
-          spawnLinebreakerSweep(axis, !!event.phase2, !!event.reverse);
+      if (String(event.attack || "").startsWith("linebreaker_laser")) {
+        const attackName = String(event.attack || "");
+        const axis = event.axis === "v" || attackName.endsWith("_v") || attackName.includes("_v_") ? "v" : "h";
+        const lineKind = event.lineKind || (attackName.includes("_sweep_") ? "sweep" : "cut");
+        if (lineKind === "sweep") {
+          const phase2 = event.phase2 != null ? !!event.phase2 : attackName.includes("_p2");
+          const reverse = event.reverse != null ? !!event.reverse : attackName.includes("_r");
+          spawnLinebreakerSweep(axis, phase2, reverse);
         } else {
           const rr = room.getRect();
-          const normPos = Number.isFinite(Number(event.normPos)) ? Number(event.normPos) : 0.5;
+          const fallbackNorm = axis === "h" ? Number(event.y) : Number(event.x);
+          const normPos = Number.isFinite(Number(event.normPos))
+            ? Number(event.normPos)
+            : (Number.isFinite(fallbackNorm) ? fallbackNorm : 0.5);
           const linePos = axis === "h" ? rr.y + normPos * rr.h : rr.x + normPos * rr.w;
           spawnLinebreakerCut(axis, linePos, {
             color: event.color || "#f0024e",
@@ -6438,9 +6445,11 @@
         ? (r.h > 0 ? (safePos - r.y) / r.h : 0.5)
         : (r.w > 0 ? (safePos - r.x) / r.w : 0.5);
       sendOnlineEnemyAttackEvent({
-        attack: "linebreaker_laser",
+        attack: `linebreaker_laser_cut_${axis}`,
         lineKind: "cut",
         axis,
+        x: isH ? 0.5 : normPos,
+        y: isH ? normPos : 0.5,
         normPos,
         color: opts.color || "#f0024e",
         width: opts.width || 76,
@@ -6476,9 +6485,11 @@
       });
       capLinebreakerHazards(14);
       sendOnlineEnemyAttackEvent({
-        attack: "linebreaker_laser",
+        attack: `linebreaker_laser_sweep_${axis}_${reverse ? "r" : "f"}_${phase2 ? "p2" : "p1"}`,
         lineKind: "sweep",
         axis,
+        x: axis === "h" ? 0.5 : (reverse ? 1 : 0),
+        y: axis === "h" ? (reverse ? 1 : 0) : 0.5,
         phase2: !!phase2,
         reverse,
       });
