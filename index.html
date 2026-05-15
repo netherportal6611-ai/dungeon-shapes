@@ -1143,7 +1143,7 @@
       clearInputs();
     }
 
-    const GAME_VERSION_LABEL = "alpha-03";
+    const GAME_VERSION_LABEL = "alpha-04";
     const WS_LOCAL_URL = "wss://jsab-multiplayer.netherportal6611.workers.dev/ws";
 
     const onlineRoom = {
@@ -2363,19 +2363,42 @@
         const color = event.color || game.ruby;
         if (ringKind === "miniPulser") spawnMiniPulserRing(pos.x, pos.y);
         else if (ringKind === "duopulser") spawnDuopulserRing(pos.x, pos.y);
+        else if (ringKind === "boss19") spawnBoss19Ring(pos.x, pos.y, color, Number(event.speedMultiplier) || 1.3, Number(event.damagePlayerAmount) || 1);
         else if (ringKind === "secretBoss") spawnSecretBossRing(pos.x, pos.y, color);
-        else if (ringKind === "magneto") spawnMagnetoRing(pos.x, pos.y, color);
+        else if (ringKind === "magneto" && event.bossKind === "boss19") spawnBoss19MagnetoRing(pos.x, pos.y, color, Number(event.speedMultiplier) || 1.3);
+        else if (ringKind === "magneto") spawnMagnetoRing(pos.x, pos.y, color, Number(event.speedMultiplier) || 1);
         else spawnPulserRing(pos.x, pos.y, color);
         return;
       }
 
       if (event.attack === "doup_droub") {
-        spawnDoupulserDroub(pos.x, pos.y, event.color || "#f0024e");
+        if (event.bossKind === "boss19") spawnBoss19Droub(pos.x, pos.y, event.color || "#f0024e", Number(event.speedMultiplier) || 1.3);
+        else spawnDoupulserDroub(pos.x, pos.y, event.color || "#f0024e");
         return;
       }
 
       if (event.attack === "doup_blaster") {
-        spawnDoupulserBlaster(pos.x, pos.y, event.color || "#f0024e");
+        if (event.bossKind === "boss19") spawnBoss19Blaster(pos.x, pos.y, event.color || "#f0024e", Number(event.speedMultiplier) || 1.3);
+        else spawnDoupulserBlaster(pos.x, pos.y, event.color || "#f0024e");
+        return;
+      }
+
+      if (event.attack === "linebreaker_laser") {
+        const axis = event.axis === "v" ? "v" : "h";
+        if (event.lineKind === "sweep") {
+          spawnLinebreakerSweep(axis, !!event.phase2, !!event.reverse);
+        } else {
+          const rr = room.getRect();
+          const normPos = Number.isFinite(Number(event.normPos)) ? Number(event.normPos) : 0.5;
+          const linePos = axis === "h" ? rr.y + normPos * rr.h : rr.x + normPos * rr.w;
+          spawnLinebreakerCut(axis, linePos, {
+            color: event.color || "#f0024e",
+            width: Number(event.width) || 76,
+            warningTime: Number(event.warningTime) || 0.7,
+            activeTime: Number(event.activeTime) || 0.3,
+            fadeTime: Number(event.fadeTime) || 0.18,
+          });
+        }
         return;
       }
     }
@@ -2936,7 +2959,7 @@
 
       socket.addEventListener("error", () => {
         game.multiplayer.joinError = "No se pudo conectar al WebSocket.";
-        game.multiplayer.status = "Revisá que npm run dev siga abierto.";
+        game.multiplayer.status = "Revisá la conexión o el Worker publicado.";
       });
     }
 
@@ -2959,7 +2982,7 @@
         game.multiplayer.roomCode = msg.roomCode || game.multiplayer.roomCode;
         game.multiplayer.isHost = onlineRoom.playerId === "p1";
         syncOnlineLobbyPlayers(msg.players || {});
-        game.multiplayer.status = game.multiplayer.isHost ? "Sos HOST · esperando jugador..." : "Unido a sala real.";
+        game.multiplayer.status = "";
         setMenuMode("roomLobby");
         return;
       }
@@ -2967,12 +2990,7 @@
       if (msg.type === "room_update") {
         onlineRoom.players = msg.players || {};
         syncOnlineLobbyPlayers(onlineRoom.players);
-        const p2Ready = !!onlineRoom.players.p2?.connected;
-        if (game.multiplayer.isHost) {
-          game.multiplayer.status = p2Ready ? "Jugador 2 conectado · listo para empezar." : "Esperando jugador...";
-        } else {
-          game.multiplayer.status = "Unido · esperando al host.";
-        }
+        game.multiplayer.status = "";
         return;
       }
 
@@ -6355,10 +6373,11 @@
       const isH = axis === "h";
       const min = isH ? r.y + margin : r.x + margin;
       const max = isH ? r.y + r.h - margin : r.x + r.w - margin;
+      const safePos = clamp(pos, min, max);
       bossHazards.push({
         type: "linebreakerLaser",
         axis,
-        pos: clamp(pos, min, max),
+        pos: safePos,
         fromPos: null,
         toPos: null,
         color: opts.color || "#f0024e",
@@ -6371,15 +6390,29 @@
         hitTimer: 0,
       });
       capLinebreakerHazards(14);
+      const normPos = isH
+        ? (r.h > 0 ? (safePos - r.y) / r.h : 0.5)
+        : (r.w > 0 ? (safePos - r.x) / r.w : 0.5);
+      sendOnlineEnemyAttackEvent({
+        attack: "linebreaker_laser",
+        lineKind: "cut",
+        axis,
+        normPos,
+        color: opts.color || "#f0024e",
+        width: opts.width || 76,
+        warningTime: opts.warningTime || 0.7,
+        activeTime: opts.activeTime || 0.3,
+        fadeTime: opts.fadeTime || 0.18,
+      });
     }
 
-    function spawnLinebreakerSweep(axis, phase2 = false) {
+    function spawnLinebreakerSweep(axis, phase2 = false, forcedReverse = null) {
       const screenPad = 120;
       const isH = axis === "h";
       // La línea barre desde fuera de la pantalla hasta fuera de la pantalla.
       const start = isH ? -screenPad : -screenPad;
       const end = isH ? canvas.height + screenPad : canvas.width + screenPad;
-      const reverse = Math.random() < 0.5;
+      const reverse = forcedReverse === null ? Math.random() < 0.5 : !!forcedReverse;
       bossHazards.push({
         type: "linebreakerLaser",
         axis,
@@ -6397,6 +6430,13 @@
         hitTimer: 0,
       });
       capLinebreakerHazards(14);
+      sendOnlineEnemyAttackEvent({
+        attack: "linebreaker_laser",
+        lineKind: "sweep",
+        axis,
+        phase2: !!phase2,
+        reverse,
+      });
     }
 
     function getLinebreakerHazardPos(hazard) {
@@ -6466,6 +6506,17 @@
         damagePlayerAmount: damage,
         life: maxRadius / speed,
       });
+      const pos = normalizeRoomPoint(x, y);
+      sendOnlineEnemyAttackEvent({
+        attack: "pulser_ring",
+        ringKind: "boss19",
+        bossKind: "boss19",
+        x: pos.x,
+        y: pos.y,
+        color,
+        speedMultiplier,
+        damagePlayerAmount: damage,
+      });
     }
 
     function spawnBoss19MagnetoRing(x, y, color = "#f0024e", speedMultiplier = 1.3) {
@@ -6486,7 +6537,7 @@
         life: maxRadius / speed,
       });
       const pos = normalizeRoomPoint(x, y);
-      sendOnlineEnemyAttackEvent({ attack: "pulser_ring", ringKind: "magneto", x: pos.x, y: pos.y, color });
+      sendOnlineEnemyAttackEvent({ attack: "pulser_ring", ringKind: "magneto", bossKind: "boss19", x: pos.x, y: pos.y, color, speedMultiplier });
     }
 
     function spawnBoss19Droub(x, y, color = "#f0024e", speedMultiplier = 1.3) {
@@ -6508,6 +6559,8 @@
         warningDuration: 1.15 / speedMultiplier,
         active: false,
       });
+      const pos = normalizeRoomPoint(x, y);
+      sendOnlineEnemyAttackEvent({ attack: "doup_droub", bossKind: "boss19", x: pos.x, y: pos.y, color, speedMultiplier });
     }
 
     function spawnBoss19Blaster(x, y, color = "#f0024e", speedMultiplier = 1.3) {
@@ -6527,6 +6580,8 @@
         exploded: false,
         damaged: false,
       });
+      const pos = normalizeRoomPoint(x, y);
+      sendOnlineEnemyAttackEvent({ attack: "doup_blaster", bossKind: "boss19", x: pos.x, y: pos.y, color, speedMultiplier });
     }
 
 
@@ -6641,10 +6696,10 @@
       sendOnlineEnemyAttackEvent({ attack: "pulser_ring", ringKind: "duopulser", x: pos.x, y: pos.y, color: "#ba0d7b" });
     }
 
-    function spawnMagnetoRing(x, y, color = game.ruby) {
+    function spawnMagnetoRing(x, y, color = game.ruby, speedMultiplier = 1) {
       const r = room.getRect();
       const maxRadius = Math.hypot(r.w, r.h);
-      const speed = player.speed * 0.72;
+      const speed = player.speed * 0.72 * speedMultiplier;
 
       pulserRings.push({
         x,
@@ -6658,6 +6713,8 @@
         hitPlayer: false,
         life: maxRadius / speed,
       });
+      const pos = normalizeRoomPoint(x, y);
+      sendOnlineEnemyAttackEvent({ attack: "pulser_ring", ringKind: "magneto", x: pos.x, y: pos.y, color, speedMultiplier });
     }
 
     function spawnDoupulserDroub(x, y, color = "#f0024e") {
