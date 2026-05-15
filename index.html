@@ -1143,7 +1143,7 @@
       clearInputs();
     }
 
-    const GAME_VERSION_LABEL = "alpha-04";
+    const GAME_VERSION_LABEL = "alpha-05";
     const WS_LOCAL_URL = "wss://jsab-multiplayer.netherportal6611.workers.dev/ws";
 
     const onlineRoom = {
@@ -2235,6 +2235,31 @@
         out.radius = Number(hazard.radius) / scale;
       }
 
+      if (hazard.type === "linebreakerLaser") {
+        const rr = room.getRect();
+        const isH = hazard.axis === "h";
+        const axisSize = Math.max(1, isH ? rr.h : rr.w);
+        const axisStart = isH ? rr.y : rr.x;
+        const sweepSize = Math.max(1, isH ? canvas.height : canvas.width);
+
+        out.posNormSpace = hazard.isSweep ? "canvas" : "room";
+        if (Number.isFinite(Number(hazard.pos))) {
+          out.posNorm = hazard.isSweep
+            ? Number(hazard.pos) / sweepSize
+            : (Number(hazard.pos) - axisStart) / axisSize;
+        }
+        if (Number.isFinite(Number(hazard.fromPos))) {
+          out.fromPosNorm = hazard.isSweep
+            ? Number(hazard.fromPos) / sweepSize
+            : (Number(hazard.fromPos) - axisStart) / axisSize;
+        }
+        if (Number.isFinite(Number(hazard.toPos))) {
+          out.toPosNorm = hazard.isSweep
+            ? Number(hazard.toPos) / sweepSize
+            : (Number(hazard.toPos) - axisStart) / axisSize;
+        }
+      }
+
       return out;
     }
 
@@ -2251,6 +2276,18 @@
         const rr = room.getRect();
         const scale = Math.max(1, Math.min(rr.w || 1, rr.h || 1));
         out.radius = Number(snap.radius) * scale;
+      }
+
+      if (snap.type === "linebreakerLaser") {
+        const rr = room.getRect();
+        const isH = snap.axis === "h";
+        const useCanvasSpace = snap.posNormSpace === "canvas" || !!snap.isSweep;
+        const axisSize = Math.max(1, useCanvasSpace ? (isH ? canvas.height : canvas.width) : (isH ? rr.h : rr.w));
+        const axisStart = useCanvasSpace ? 0 : (isH ? rr.y : rr.x);
+
+        if (Number.isFinite(Number(snap.posNorm))) out.pos = axisStart + Number(snap.posNorm) * axisSize;
+        if (Number.isFinite(Number(snap.fromPosNorm))) out.fromPos = axisStart + Number(snap.fromPosNorm) * axisSize;
+        if (Number.isFinite(Number(snap.toPosNorm))) out.toPos = axisStart + Number(snap.toPosNorm) * axisSize;
       }
 
       return out;
@@ -2417,6 +2454,9 @@
       if (!isOnlineGuest()) return;
 
       const hostileProjectiles = Array.isArray(msg.hostileProjectiles) ? msg.hostileProjectiles : [];
+      const linebreakerHazards = Array.isArray(msg.bossHazards)
+        ? msg.bossHazards.filter(h => h && h.type === "linebreakerLaser")
+        : [];
 
       // Proyectiles enemigos: se reemplazan siempre por el snapshot actual del host.
       // Si el host manda vacío, significa que ya no existen y no deben quedar hitboxes fantasma.
@@ -2425,6 +2465,18 @@
       }
       for (const snap of hostileProjectiles) {
         projectiles.push(deserializeOnlineHostileProjectile(snap));
+      }
+
+      // Linebreaker tiene lasers largos y posicionales: se respaldan por snapshot para que
+      // host e invitado terminen viendo el mismo patrón aunque un evento llegue tarde.
+      // Si llega un snapshot vacío viejo justo después del evento, conservamos el evento local.
+      if (linebreakerHazards.length > 0) {
+        for (let i = bossHazards.length - 1; i >= 0; i--) {
+          if (bossHazards[i]?.type === "linebreakerLaser") bossHazards.splice(i, 1);
+        }
+        for (const snap of linebreakerHazards) {
+          bossHazards.push(deserializeOnlineBossHazard(snap));
+        }
       }
 
       // Anillos y hazards cortos ahora se reproducen por enemy_attack_event.
@@ -6308,6 +6360,12 @@
 
     function runLinebreakerAttack(enemy) {
       const phase2 = !!enemy.phase2;
+      const target = getClosestOnlineEnemyTarget(enemy);
+      if (!target) {
+        enemy.attackLockTimer = 0.35;
+        return;
+      }
+
       // Evita acumulaciones raras de lasers si el juego cae de FPS o entra en focus/blur.
       if (getLinebreakerHazardCount() >= 12) {
         enemy.attackLockTimer = 0.28;
@@ -6321,20 +6379,20 @@
       enemy.lastAttack = attack;
 
       if (attack === "horizontal") {
-        spawnLinebreakerCut("h", player.y, { warningTime: 0.62, activeTime: 0.24, width: 61 });
+        spawnLinebreakerCut("h", target.y, { warningTime: 0.62, activeTime: 0.24, width: 61 });
         enemy.attackLockTimer = 0.82;
         return;
       }
 
       if (attack === "vertical") {
-        spawnLinebreakerCut("v", player.x, { warningTime: 0.62, activeTime: 0.24, width: 61 });
+        spawnLinebreakerCut("v", target.x, { warningTime: 0.62, activeTime: 0.24, width: 61 });
         enemy.attackLockTimer = 0.82;
         return;
       }
 
       if (attack === "cross") {
-        spawnLinebreakerCut("h", player.y, { warningTime: phase2 ? 0.52 : 0.64, activeTime: 0.24, width: phase2 ? 67 : 61 });
-        spawnLinebreakerCut("v", player.x, { warningTime: phase2 ? 0.52 : 0.64, activeTime: 0.24, width: phase2 ? 67 : 61 });
+        spawnLinebreakerCut("h", target.y, { warningTime: phase2 ? 0.52 : 0.64, activeTime: 0.24, width: phase2 ? 67 : 61 });
+        spawnLinebreakerCut("v", target.x, { warningTime: phase2 ? 0.52 : 0.64, activeTime: 0.24, width: phase2 ? 67 : 61 });
         enemy.attackLockTimer = phase2 ? 0.95 : 1.05;
         return;
       }
@@ -6344,19 +6402,19 @@
         const gap = Math.max(70, Math.min(r.w, r.h) * 0.14);
         const horizontalFirst = Math.random() < 0.5;
         if (horizontalFirst) {
-          spawnLinebreakerCut("h", clamp(player.y - gap, r.y + 45, r.y + r.h - 45), { warningTime: 0.50, activeTime: 0.22, width: 62 });
-          spawnLinebreakerCut("h", clamp(player.y + gap, r.y + 45, r.y + r.h - 45), { warningTime: 0.58, activeTime: 0.22, width: 62 });
+          spawnLinebreakerCut("h", clamp(target.y - gap, r.y + 45, r.y + r.h - 45), { warningTime: 0.50, activeTime: 0.22, width: 62 });
+          spawnLinebreakerCut("h", clamp(target.y + gap, r.y + 45, r.y + r.h - 45), { warningTime: 0.58, activeTime: 0.22, width: 62 });
         } else {
-          spawnLinebreakerCut("v", clamp(player.x - gap, r.x + 45, r.x + r.w - 45), { warningTime: 0.50, activeTime: 0.22, width: 62 });
-          spawnLinebreakerCut("v", clamp(player.x + gap, r.x + 45, r.x + r.w - 45), { warningTime: 0.58, activeTime: 0.22, width: 62 });
+          spawnLinebreakerCut("v", clamp(target.x - gap, r.x + 45, r.x + r.w - 45), { warningTime: 0.50, activeTime: 0.22, width: 62 });
+          spawnLinebreakerCut("v", clamp(target.x + gap, r.x + 45, r.x + r.w - 45), { warningTime: 0.58, activeTime: 0.22, width: 62 });
         }
         enemy.attackLockTimer = 0.98;
         return;
       }
 
       if (attack === "aimedCombo") {
-        spawnLinebreakerCut("h", player.y, { warningTime: 0.50, activeTime: 0.22, width: 64 });
-        spawnLinebreakerCut("v", player.x, { warningTime: 0.70, activeTime: 0.22, width: 64 });
+        spawnLinebreakerCut("h", target.y, { warningTime: 0.50, activeTime: 0.22, width: 64 });
+        spawnLinebreakerCut("v", target.x, { warningTime: 0.70, activeTime: 0.22, width: 64 });
         enemy.attackLockTimer = 1.05;
         return;
       }
