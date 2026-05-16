@@ -1142,7 +1142,7 @@
       clearInputs();
     }
 
-    const GAME_VERSION_LABEL = "alpha-12";
+    const GAME_VERSION_LABEL = "alpha-13";
     const WS_LOCAL_URL = "wss://jsab-multiplayer.netherportal6611.workers.dev/ws";
     const ONLINE_PLAYER_IDS = ["p1", "p2", "p3"];
     const ONLINE_REMOTE_PRIMARY_COLOR = "#00ff8c";
@@ -9815,6 +9815,100 @@ if (player.stamina <= 0) return false;
       roomCodeBox.style.transform = `scale(${scale})`;
       roomCodeInput.style.width = `${inputW}px`;
       roomCodeBox.style.display = "flex";
+    }
+
+    function drawMenuKicker(text, x, y, align = "left") {
+      ctx.save();
+      ctx.font = "950 12px Inter, Segoe UI, Arial, sans-serif";
+      ctx.textAlign = align;
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "#42dfff";
+      ctx.fillText(text, x, y);
+      ctx.restore();
+    }
+
+    function drawMenuSectionLabel(text, x, y, align = "left", color = "rgba(255,255,255,0.52)") {
+      ctx.save();
+      ctx.font = "900 11px Inter, Segoe UI, Arial, sans-serif";
+      ctx.textAlign = align;
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = color;
+      ctx.fillText(text, x, y);
+      ctx.restore();
+    }
+
+    function drawMenuTitle(lines, x, y, align = "left", size = 52) {
+      ctx.save();
+      ctx.textAlign = align;
+      ctx.textBaseline = "middle";
+      ctx.font = `950 ${size}px Inter, Segoe UI, Arial, sans-serif`;
+      ctx.fillStyle = "rgba(255,255,255,0.96)";
+      ctx.fillText(lines[0] || "", x, y);
+      ctx.fillStyle = game.ruby;
+      ctx.fillText(lines[1] || "", x, y + size * 0.92);
+      ctx.restore();
+    }
+
+    function drawMenuStatusPill(x, y, text, cyan = false, align = "left") {
+      ctx.save();
+      ctx.font = "900 11px Inter, Segoe UI, Arial, sans-serif";
+      const w = Math.max(120, ctx.measureText(text).width + 26);
+      const h = 28;
+      const px = align === "center" ? x - w / 2 : (align === "right" ? x - w : x);
+      drawRoundedRect(px, y - h / 2, w, h, 14);
+      ctx.fillStyle = cyan ? "rgba(3,28,38,0.78)" : "rgba(32,8,24,0.78)";
+      ctx.fill();
+      ctx.strokeStyle = cyan ? "rgba(66,223,255,0.46)" : "rgba(236,0,116,0.46)";
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = cyan ? "#42dfff" : game.ruby;
+      ctx.fillText(text, px + w / 2, y + 1);
+      ctx.restore();
+    }
+
+    function drawMainMenu() {
+      syncRoomCodeBox();
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      drawMenuBackground();
+
+      const panel = (game.menuMode === "joinRoom" || game.menuMode === "roomLobby")
+        ? getMenuRoomPanelRect()
+        : getMenuLeftPanelRect();
+      drawMenuPanelDecor(panel);
+
+      if (game.menuMode === "main") {
+        const portrait = isPortraitMenuLayout();
+        const x = portrait ? panel.x + panel.w / 2 : panel.x + 48;
+        const align = portrait ? "center" : "left";
+        drawMenuKicker("DUNGEON SHAPES", x, panel.y + (portrait ? 52 : 76), align);
+        drawMenuTitle(["ROGUELIKE", "ROOM BASE"], x, panel.y + (portrait ? 98 : 130), align, portrait ? 34 : 46);
+        drawMenuStatusPill(x, panel.y + (portrait ? 190 : 250), "ALPHA ONLINE", true, align);
+        const b = getMenuButtonRects();
+        drawMenuButton(b.play, "JUGAR", true);
+        drawMenuButton(b.multiplayer, "MULTIJUGADOR", false);
+        drawMenuButton(b.settings, "AJUSTES", false);
+        if (!portrait) drawMenuPreview();
+      } else if (game.menuMode === "multiplayer") {
+        drawMultiplayerMenu(panel);
+      } else if (game.menuMode === "joinRoom") {
+        drawJoinRoomMenu(panel);
+      } else if (game.menuMode === "roomLobby") {
+        drawRoomLobbyMenu(panel);
+      }
+
+      if (game.settingsOpen) {
+        drawSettingsPanel();
+      }
+
+      ctx.save();
+      ctx.font = "900 13px Inter, Segoe UI, Arial, sans-serif";
+      ctx.textAlign = "right";
+      ctx.textBaseline = "bottom";
+      ctx.fillStyle = "rgba(255,255,255,0.34)";
+      ctx.fillText(GAME_VERSION_LABEL, canvas.width - 18, canvas.height - 14);
+      ctx.restore();
     }
 
     function drawSettingsIcon() {
