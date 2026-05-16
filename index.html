@@ -1089,6 +1089,16 @@
       };
     }
 
+    function activateMenuAtClientPoint(clientX, clientY) {
+      if (game.state !== "menu") return false;
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / Math.max(1, rect.width);
+      const scaleY = canvas.height / Math.max(1, rect.height);
+      const x = (clientX - rect.left) * scaleX;
+      const y = (clientY - rect.top) * scaleY;
+      return handleMenuClick(x, y);
+    }
+
     function isTypingInSettingsBox() {
       return document.activeElement === settingsCheatInput || document.activeElement === roomCodeInput;
     }
@@ -1142,7 +1152,7 @@
       clearInputs();
     }
 
-    const GAME_VERSION_LABEL = "alpha-13";
+    const GAME_VERSION_LABEL = "alpha-14";
     const WS_LOCAL_URL = "wss://jsab-multiplayer.netherportal6611.workers.dev/ws";
     const ONLINE_PLAYER_IDS = ["p1", "p2", "p3"];
     const ONLINE_REMOTE_PRIMARY_COLOR = "#00ff8c";
@@ -3408,7 +3418,7 @@
       }
 
       if (game.state === "menu") {
-        if (e.button === 0) handleMenuClick(p.x, p.y);
+        if (e.button === 0) activateMenuAtClientPoint(e.clientX, e.clientY);
         return;
       }
 
@@ -3449,6 +3459,14 @@
 
     canvas.addEventListener("pointerdown", () => {
       canvas.focus();
+    });
+
+    canvas.addEventListener("pointerup", e => {
+      if (game.state !== "menu") return;
+      if (e.pointerType === "mouse") return;
+      e.preventDefault();
+      canvas.focus();
+      activateMenuAtClientPoint(e.clientX, e.clientY);
     });
 
     window.addEventListener("mouseup", e => {
