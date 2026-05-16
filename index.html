@@ -1142,16 +1142,18 @@
       clearInputs();
     }
 
-    const GAME_VERSION_LABEL = "alpha-12";
+    const GAME_VERSION_LABEL = "alpha-13";
     const WS_LOCAL_URL = "wss://jsab-multiplayer.netherportal6611.workers.dev/ws";
     const ONLINE_PLAYER_IDS = ["p1", "p2", "p3"];
     const ONLINE_REMOTE_PRIMARY_COLOR = "#00ff8c";
     const ONLINE_REMOTE_SECONDARY_COLOR = "#f6ff75";
+    const ONLINE_RECONNECT_MAX_ATTEMPTS = 5;
 
     const onlineRoom = {
       socket: null,
       connectMode: "none", // create, join
       connected: false,
+      reconnecting: false,
       playerId: "",
       players: {},
     };
@@ -1163,6 +1165,9 @@
     let onlineHazardIdCounter = 1;
     let preciseAimTargetIdCounter = 1;
     let onlineLastEnemySnapshotAt = 0;
+    let onlineReconnectAttempts = 0;
+    let onlineReconnectTimer = null;
+    let onlineHeartbeatTimer = 0;
     const onlineAttackEventSeen = new Set();
     const onlineDamageCooldowns = {};
     const onlineLocalPostBossRewards = {};
@@ -1674,12 +1679,16 @@
       return !!onlineRoom.playerId && !!onlineRoom.socket && onlineRoom.socket.readyState === WebSocket.OPEN;
     }
 
+    function isOnlineSessionActive() {
+      return isOnlineMatchActive() || (!!onlineRoom.playerId && !!onlineRoom.reconnecting);
+    }
+
     function isOnlineHost() {
-      return isOnlineMatchActive() && onlineRoom.playerId === "p1";
+      return isOnlineSessionActive() && onlineRoom.playerId === "p1";
     }
 
     function isOnlineGuest() {
-      return isOnlineMatchActive() && onlineRoom.playerId && onlineRoom.playerId !== "p1";
+      return isOnlineSessionActive() && onlineRoom.playerId && onlineRoom.playerId !== "p1";
     }
 
     function getRemoteOnlinePlayer() {
@@ -1709,6 +1718,7 @@
     function shouldRunLocalEnemySimulation() {
       // Offline: el juego funciona igual que siempre.
       // Online: solo el host simula enemigos/oleadas; el invitado recibe snapshots.
+      if (onlineRoom.reconnecting && onlineRoom.playerId && onlineRoom.playerId !== "p1") return false;
       return !isOnlineMatchActive() || isOnlineHost();
     }
 
@@ -1753,12 +1763,31 @@
       const rr = room.getRect();
       const nx = rr.w > 0 ? (enemy.x - rr.x) / rr.w : 0.5;
       const ny = rr.h > 0 ? (enemy.y - rr.y) / rr.h : 0.5;
+      const now = performance.now();
+      let vx = 0;
+      let vy = 0;
+
+      if (
+        Number.isFinite(Number(enemy._onlineLastSnapshotNx)) &&
+        Number.isFinite(Number(enemy._onlineLastSnapshotNy)) &&
+        Number.isFinite(Number(enemy._onlineLastSnapshotAt))
+      ) {
+        const dt = Math.max(0.001, (now - Number(enemy._onlineLastSnapshotAt)) / 1000);
+        vx = clamp((nx - Number(enemy._onlineLastSnapshotNx)) / dt, -3.5, 3.5);
+        vy = clamp((ny - Number(enemy._onlineLastSnapshotNy)) / dt, -3.5, 3.5);
+      }
+
+      enemy._onlineLastSnapshotNx = nx;
+      enemy._onlineLastSnapshotNy = ny;
+      enemy._onlineLastSnapshotAt = now;
 
       const out = {
         id: getOrCreateOnlineEnemyId(enemy),
         type: enemy.type,
         x: nx,
         y: ny,
+        vx,
+        vy,
         size: enemy.size,
         hp: enemy.hp,
         maxHp: enemy.maxHp,
@@ -1766,6 +1795,7 @@
         rotation: enemy.rotation || 0,
         color: enemy.color || "",
         phase2: !!enemy.phase2,
+        isBoss: !!enemy._isBoss,
         shieldHp: enemy.shieldHp || 0,
         shieldMaxHp: enemy.shieldMaxHp || 0,
       };
@@ -1775,7 +1805,7 @@
         "pulseTimer", "pulseInterval", "innerRotation", "rotationSpeed", "rayLength", "rayWidth",
         "attackTimer", "attackCooldown", "attackLockTimer", "moveTime", "shieldTimer", "shieldInterval",
         "preferredDistance", "minDistance", "maxDistance", "strafeDir", "strafeSwapTimer",
-        "baseX", "baseY", "shootTimer", "shootInterval"
+        "baseX", "baseY", "shootTimer", "shootInterval", "speed"
       ];
 
       for (const key of numericKeys) {
@@ -2072,6 +2102,17 @@
           xpChoiceOpen: !!game.xpChoiceOpen,
           orbBlocking: !!(game.waveState === "intermission" && (game.upgradePickup || game.upgradeShopOpen))
         }));
+      } catch {}
+    }
+
+    function updateOnlineHeartbeat(dt) {
+      if (!onlineRoom.socket || onlineRoom.socket.readyState !== WebSocket.OPEN) return;
+      onlineHeartbeatTimer -= dt;
+      if (onlineHeartbeatTimer > 0) return;
+      onlineHeartbeatTimer = 12;
+
+      try {
+        onlineRoom.socket.send(JSON.stringify({ type: "ping", at: Date.now() }));
       } catch {}
     }
 
@@ -2680,6 +2721,10 @@
         let enemy = byId.get(snap.id);
         const wx = rr.x + Number(snap.x) * rr.w;
         const wy = rr.y + Number(snap.y) * rr.h;
+        const prevX = enemy ? Number(enemy.x) : NaN;
+        const prevY = enemy ? Number(enemy.y) : NaN;
+        const prevSnapshotAt = enemy ? Number(enemy._guestSnapshotAt || 0) : 0;
+        const now = performance.now();
 
         const wasNewEnemy = !enemy;
         if (!enemy) {
@@ -2688,6 +2733,7 @@
 
         enemy._onlineId = snap.id;
         enemy.type = snap.type || enemy.type;
+        enemy._isBoss = !!snap.isBoss;
 
         // FIX: en invitado, la interpolación anterior podía dejar enemigos/ataques desfasados
         // o directamente sin actualizar. Volvemos a usar el snapshot del host como fuente real.
@@ -2695,6 +2741,18 @@
         if (Number.isFinite(wy)) enemy.y = wy;
         if (Number.isFinite(Number(snap.rotation))) enemy.rotation = Number(snap.rotation);
         if (Number.isFinite(Number(snap.innerRotation))) enemy.innerRotation = Number(snap.innerRotation);
+
+        const snapVx = Number(snap.vx);
+        const snapVy = Number(snap.vy);
+        if (Number.isFinite(snapVx)) enemy.netVx = snapVx * rr.w;
+        else if (Number.isFinite(prevX) && Number.isFinite(wx) && prevSnapshotAt > 0) {
+          enemy.netVx = (wx - prevX) / Math.max(0.001, (now - prevSnapshotAt) / 1000);
+        }
+        if (Number.isFinite(snapVy)) enemy.netVy = snapVy * rr.h;
+        else if (Number.isFinite(prevY) && Number.isFinite(wy) && prevSnapshotAt > 0) {
+          enemy.netVy = (wy - prevY) / Math.max(0.001, (now - prevSnapshotAt) / 1000);
+        }
+        enemy._guestSnapshotAt = now;
 
         enemy._netTargetX = enemy.x;
         enemy._netTargetY = enemy.y;
@@ -2732,7 +2790,7 @@
           "pulseTimer", "pulseInterval", "rotationSpeed", "rayLength", "rayWidth",
           "attackTimer", "attackCooldown", "attackLockTimer", "moveTime", "shieldTimer", "shieldInterval",
           "preferredDistance", "minDistance", "maxDistance", "strafeDir", "strafeSwapTimer",
-          "baseX", "baseY", "shootTimer", "shootInterval"
+          "baseX", "baseY", "shootTimer", "shootInterval", "speed"
         ];
 
         for (const key of numericKeys) {
@@ -2763,6 +2821,10 @@
         maxHp: Number(snap.maxHp) || 1,
         hpVisual: Number(snap.hpVisual) || Number(snap.hp) || 1,
         rotation: Number(snap.rotation) || 0,
+        _isBoss: !!snap.isBoss,
+        netVx: Number.isFinite(Number(snap.vx)) ? Number(snap.vx) * room.getRect().w : 0,
+        netVy: Number.isFinite(Number(snap.vy)) ? Number(snap.vy) * room.getRect().h : 0,
+        speed: Number(snap.speed) || 0,
         color: snap.color || game.ruby,
       };
 
@@ -3044,12 +3106,43 @@
       onlineRoom.socket = null;
       onlineRoom.connectMode = "none";
       onlineRoom.connected = false;
+      onlineRoom.reconnecting = false;
       onlineRoom.playerId = "";
       onlineRoom.players = {};
     }
 
+    function clearOnlineReconnectTimer() {
+      if (!onlineReconnectTimer) return;
+      clearTimeout(onlineReconnectTimer);
+      onlineReconnectTimer = null;
+    }
+
+    function scheduleOnlineReconnect(roomCode, playerName, mode) {
+      if (!roomCode || !mode || game.menuMode === "joinRoom" || game.menuMode === "multiplayer") return;
+      if (onlineReconnectTimer) return;
+      if (onlineReconnectAttempts >= ONLINE_RECONNECT_MAX_ATTEMPTS) {
+        onlineRoom.reconnecting = false;
+        game.multiplayer.status = "Conexión perdida.";
+        game.multiplayer.joinError = "No se pudo reconectar.";
+        return;
+      }
+
+      onlineReconnectAttempts++;
+      onlineRoom.reconnecting = true;
+      game.multiplayer.status = `Reconectando... ${onlineReconnectAttempts}/${ONLINE_RECONNECT_MAX_ATTEMPTS}`;
+
+      const delay = Math.min(4200, 650 + onlineReconnectAttempts * 450);
+      onlineReconnectTimer = setTimeout(() => {
+        onlineReconnectTimer = null;
+        connectOnlineRoom(roomCode, playerName, mode, true);
+      }, delay);
+    }
+
     function closeOnlineSocket(sendLeave = true) {
+      clearOnlineReconnectTimer();
+      onlineHeartbeatTimer = 0;
       const socket = onlineRoom.socket;
+      if (socket) socket._expectedClose = true;
       if (socket && socket.readyState === WebSocket.OPEN && sendLeave) {
         try {
           socket.send(JSON.stringify({ type: "leave_room" }));
@@ -3063,8 +3156,18 @@
       resetOnlineRoomState();
     }
 
-    function connectOnlineRoom(roomCode, playerName, mode) {
+    function connectOnlineRoom(roomCode, playerName, mode, reconnecting = false) {
+      if (!reconnecting) {
+        onlineReconnectAttempts = 0;
+        clearOnlineReconnectTimer();
+      }
+      const previousPlayerId = onlineRoom.playerId;
+      const previousPlayers = onlineRoom.players;
       closeOnlineSocket(false);
+      if (reconnecting) {
+        onlineRoom.playerId = previousPlayerId;
+        onlineRoom.players = previousPlayers || {};
+      }
 
       const cleanCode = String(roomCode || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
       const cleanName = String(playerName || "Jugador").trim().slice(0, 18) || "Jugador";
@@ -3076,7 +3179,8 @@
       }
 
       onlineRoom.connectMode = mode;
-      game.multiplayer.status = "Conectando WebSocket...";
+      onlineRoom.reconnecting = !!reconnecting;
+      game.multiplayer.status = reconnecting ? "Reconectando WebSocket..." : "Conectando WebSocket...";
       game.multiplayer.joinError = "";
 
       const url = `${WS_LOCAL_URL}?room=${encodeURIComponent(cleanCode)}&name=${encodeURIComponent(cleanName)}`;
@@ -3084,8 +3188,10 @@
       onlineRoom.socket = socket;
 
       socket.addEventListener("open", () => {
+        onlineReconnectAttempts = 0;
+        onlineRoom.reconnecting = false;
         onlineRoom.connected = true;
-        game.multiplayer.status = "WebSocket conectado...";
+        game.multiplayer.status = reconnecting ? "Reconectado." : "WebSocket conectado...";
       });
 
       socket.addEventListener("message", event => {
@@ -3099,19 +3205,31 @@
       });
 
       socket.addEventListener("close", () => {
+        if (socket !== onlineRoom.socket) return;
         onlineRoom.connected = false;
+        if (!socket._expectedClose && (game.menuMode === "roomLobby" || game.state === "playing")) {
+          scheduleOnlineReconnect(cleanCode, cleanName, mode);
+          return;
+        }
+        onlineRoom.reconnecting = false;
         if (game.menuMode === "roomLobby" && !game.multiplayer.joinError) {
           game.multiplayer.status = "Conexión cerrada.";
         }
       });
 
       socket.addEventListener("error", () => {
+        if (reconnecting) {
+          game.multiplayer.status = "Reconexión en espera...";
+          return;
+        }
         game.multiplayer.joinError = "No se pudo conectar al WebSocket.";
         game.multiplayer.status = "Revisá la conexión o el Worker publicado.";
       });
     }
 
     function handleOnlineRoomMessage(msg) {
+      if (msg.type === "pong") return;
+
       if (msg.type === "connected") {
         onlineRoom.playerId = msg.playerId || "";
         onlineRoom.players = msg.players || {};
@@ -3640,6 +3758,8 @@
       preciseShotInterval: 0.2,
       preciseAimLockId: "",
       preciseAimLockStartedAt: 0,
+      preciseAimReleaseTimer: 0,
+      preciseAimReleaseGrace: 0.08,
 
       // Pickup de cura antes del boss de oleada 9.
       healPickup: null,
@@ -3647,6 +3767,7 @@
       // Comandos desde configuración.
       immortalMode: false,
       showHitboxes: false,
+      debugOverlay: false,
       settingsCommandMessage: "",
       settingsCommandMessageTimer: 0,
       arenaScale: 1.0,
@@ -4889,28 +5010,35 @@
     function clearPreciseAimLock() {
       game.preciseAimLockId = "";
       game.preciseAimLockStartedAt = 0;
+      game.preciseAimReleaseTimer = 0;
     }
 
     function getPreciseAimPointForEnemy(enemy, origin = null, projectileSpeed = 680) {
       if (!enemy) return { x: player.x, y: player.y };
 
       const base = { x: enemy.x, y: enemy.y };
-      if (enemy.type !== "kamikaze") return base;
-
       const ox = Number(origin?.x);
       const oy = Number(origin?.y);
       const fromX = Number.isFinite(ox) ? ox : player.x;
       const fromY = Number.isFinite(oy) ? oy : player.y;
       const dist = Math.hypot(enemy.x - fromX, enemy.y - fromY);
-      const travelLead = dist / Math.max(1, projectileSpeed) * 0.34;
-      const snapshotLead = isOnlineGuest() ? 0.10 : 0.04;
-      const leadTime = Math.min(0.24, snapshotLead + travelLead);
-      const speed = Number(enemy.speed) || 150;
-      const rot = Number(enemy.rotation) || 0;
+      const travelLead = dist / Math.max(1, projectileSpeed) * (enemy.type === "kamikaze" ? 0.40 : 0.18);
+      const snapshotLead = isOnlineGuest() ? 0.12 : 0.035;
+      const leadTime = Math.min(enemy.type === "kamikaze" ? 0.28 : 0.16, snapshotLead + travelLead);
+
+      let vx = Number(enemy.netVx);
+      let vy = Number(enemy.netVy);
+      if (!Number.isFinite(vx) || !Number.isFinite(vy) || Math.hypot(vx, vy) < 4) {
+        if (enemy.type !== "kamikaze") return base;
+        const speed = Number(enemy.speed) || 150;
+        const rot = Number(enemy.rotation) || 0;
+        vx = Math.cos(rot) * speed;
+        vy = Math.sin(rot) * speed;
+      }
 
       return {
-        x: enemy.x + Math.cos(rot) * speed * leadTime,
-        y: enemy.y + Math.sin(rot) * speed * leadTime,
+        x: enemy.x + vx * leadTime,
+        y: enemy.y + vy * leadTime,
       };
     }
 
@@ -4942,8 +5070,9 @@
         const allowedMiss = Math.max(118, enemy.size * 2.8);
         if (perpendicular > allowedMiss && cursorDist > allowedMiss * 1.45) continue;
 
-        const closeThreatBonus = enemy.type === "kamikaze" ? -Math.max(0, 220 - dist) * 0.24 : 0;
-        const score = perpendicular * 0.72 + cursorDist * 0.22 + Math.max(0, forward) * 0.035 + closeThreatBonus;
+        const underAim = perpendicular <= allowedMiss || cursorDist <= allowedMiss * 1.1;
+        const closeThreatBonus = enemy.type === "kamikaze" && underAim ? -Math.max(0, 220 - dist) * 0.18 : 0;
+        const score = perpendicular * 0.78 + cursorDist * 0.20 + Math.max(0, forward) * 0.032 + closeThreatBonus;
 
         if (score < bestScore) {
           bestScore = score;
@@ -5396,16 +5525,51 @@
       return game.waveState === "combat" && isBossWaveNumber(game.wave);
     }
 
+    function isBossEnemy(enemy) {
+      return !!enemy && (enemy._isBoss ||
+        enemy.type === "doupulser" ||
+        enemy.type === "doupulserFinal" ||
+        enemy.type === "linebreaker" ||
+        enemy.type === "secretBoss"
+      );
+    }
+
+    function getOnlineBalancePlayerCount() {
+      if (!isOnlineSessionActive()) return 1;
+      return Math.max(2, Math.min(3, getOnlineConnectedPlayerIds().length || 2));
+    }
+
+    function getMultiplayerEnemyHpMultiplier(enemy) {
+      if (!isOnlineSessionActive()) return 1;
+      const players = getOnlineBalancePlayerCount();
+      if (isBossEnemy(enemy)) return players >= 3 ? 4 : 2;
+      return 2;
+    }
+
     function applyMultiplayerEnemyHpScaling() {
-      if (!isOnlineMatchActive()) return;
+      if (!isOnlineSessionActive()) return;
       for (const enemy of enemies) {
-        if (!enemy || enemy._mpHpScaled) continue;
-        enemy._mpHpScaled = true;
-        enemy.hp = Math.ceil((Number(enemy.hp) || 1) * 2);
-        enemy.maxHp = Math.ceil((Number(enemy.maxHp) || enemy.hp || 1) * 2);
+        if (!enemy) continue;
+        const multiplier = getMultiplayerEnemyHpMultiplier(enemy);
+        if (enemy._mpHpMultiplier === multiplier) continue;
+
+        const currentMultiplier = Number(enemy._mpHpMultiplier) || 1;
+        const baseHp = Number.isFinite(Number(enemy._mpBaseHp)) ? Number(enemy._mpBaseHp) : (Number(enemy.hp) || 1) / currentMultiplier;
+        const baseMaxHp = Number.isFinite(Number(enemy._mpBaseMaxHp)) ? Number(enemy._mpBaseMaxHp) : (Number(enemy.maxHp) || Number(enemy.hp) || 1) / currentMultiplier;
+        const baseShieldHp = Number.isFinite(Number(enemy._mpBaseShieldHp)) ? Number(enemy._mpBaseShieldHp) : (Number(enemy.shieldHp) || 0) / currentMultiplier;
+        const baseShieldMaxHp = Number.isFinite(Number(enemy._mpBaseShieldMaxHp)) ? Number(enemy._mpBaseShieldMaxHp) : (Number(enemy.shieldMaxHp) || 0) / currentMultiplier;
+
+        enemy._mpBaseHp = baseHp;
+        enemy._mpBaseMaxHp = baseMaxHp;
+        enemy._mpBaseShieldHp = baseShieldHp;
+        enemy._mpBaseShieldMaxHp = baseShieldMaxHp;
+        enemy._mpHpMultiplier = multiplier;
+
+        enemy.hp = Math.ceil(baseHp * multiplier);
+        enemy.maxHp = Math.ceil(baseMaxHp * multiplier);
         enemy.hpVisual = enemy.hp;
-        if (enemy.shieldHp) enemy.shieldHp = Math.ceil(enemy.shieldHp * 2);
-        if (enemy.shieldMaxHp) enemy.shieldMaxHp = Math.ceil(enemy.shieldMaxHp * 2);
+        if (baseShieldHp > 0) enemy.shieldHp = Math.ceil(baseShieldHp * multiplier);
+        if (baseShieldMaxHp > 0) enemy.shieldMaxHp = Math.ceil(baseShieldMaxHp * multiplier);
       }
     }
 
@@ -5428,6 +5592,7 @@
       showWaveBanner(`OLEADA ${waveNumber}`, bossWave ? (waveNumber === 10 || waveNumber === 20 || waveNumber === 2000 ? "boss" : "miniboss") : "preparate");
       triggerRoomPulse(bossWave ? game.ruby : "#42dfff", bossWave ? 0.62 : 0.46);
       spawnWaveEnemies(waveNumber);
+      if (bossWave) enemies.forEach(enemy => { enemy._isBoss = true; });
       applyMultiplayerEnemyHpScaling();
       if (isOnlineHost()) enemies.forEach(getOrCreateOnlineEnemyId);
       markEnemySpawns();
@@ -5575,6 +5740,9 @@
       } else if (command === "H") {
         game.showHitboxes = !game.showHitboxes;
         showSettingsCommandMessage(game.showHitboxes ? "Hitboxes visibles" : "Hitboxes ocultas");
+      } else if (command === "D" || normalizedCommand === "debug") {
+        game.debugOverlay = !game.debugOverlay;
+        showSettingsCommandMessage(game.debugOverlay ? "Debug online visible" : "Debug online oculto");
       } else if (giveWeaponByCommand(normalizedCommand)) {
         // El mensaje ya lo muestra giveWeaponByCommand().
       } else {
@@ -7535,7 +7703,14 @@ if (player.stamina <= 0) return false;
       }
 
       if (!isPreciseFireHeld()) {
-        clearPreciseAimLock();
+        if (game.preciseAimLockId) {
+          game.preciseAimReleaseTimer += dt;
+          if (game.preciseAimReleaseTimer >= (game.preciseAimReleaseGrace || 0.08)) {
+            clearPreciseAimLock();
+          }
+        }
+      } else {
+        game.preciseAimReleaseTimer = 0;
       }
 
       if (game.rightAbility === "preciseShot" && mouse.rightDown && game.state === "playing") {
@@ -7777,6 +7952,7 @@ if (player.stamina <= 0) return false;
 
     function update(dt) {
       game.time += dt;
+      updateOnlineHeartbeat(dt);
       updateOnlinePlayerSend(dt);
       updateRemoteOnlineVisual(dt);
       sendOnlineEnemySnapshot(dt);
@@ -8110,10 +8286,43 @@ if (player.stamina <= 0) return false;
       ctx.restore();
     }
 
+    function isPreciseAimLockedEnemy(enemy) {
+      return !!game.preciseAimLockId &&
+        isPreciseAimTargetValid(enemy) &&
+        getPreciseAimTargetId(enemy) === game.preciseAimLockId;
+    }
+
+    function drawPreciseAimLockIndicator(enemy) {
+      if (!isPreciseAimLockedEnemy(enemy)) return;
+      if (!isPreciseFireHeld() && game.preciseAimReleaseTimer <= 0) return;
+
+      const pulse = 0.5 + Math.sin(game.time * 12) * 0.5;
+      const radius = enemy.size * (0.78 + pulse * 0.08) + 10;
+
+      ctx.save();
+      ctx.globalCompositeOperation = "screen";
+      ctx.globalAlpha = mobileInput.enabled ? 0.42 : 0.58;
+      ctx.strokeStyle = "#42dfff";
+      ctx.lineWidth = 3;
+      ctx.setLineDash([8, 6]);
+      ctx.beginPath();
+      ctx.arc(enemy.x, enemy.y, radius, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = mobileInput.enabled ? 0.18 : 0.24;
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(enemy.x, enemy.y, radius + 5, -Math.PI * 0.12, Math.PI * 0.34);
+      ctx.stroke();
+      ctx.restore();
+    }
+
     function drawEnemies() {
       for (const enemy of enemies) {
         const hitFlash = enemy.hitFlash || 0;
         drawEnemySpawnWarning(enemy);
+        drawPreciseAimLockIndicator(enemy);
 
         if (enemy.type === "kamikaze") {
           // Aura circular eliminada: deja solo la silueta del enemigo.
@@ -10455,21 +10664,34 @@ if (player.stamina <= 0) return false;
       const portrait = isPortraitMenuLayout();
       const compact = isCompactLandscapeMenuLayout();
       if (portrait) {
-        const w = Math.min(canvas.width - 40, 460);
-        return { x: canvas.width / 2 - w / 2, y: 54, w, h: Math.min(canvas.height - 108, 560) };
+        const w = Math.min(canvas.width - 32, 430);
+        const h = Math.min(canvas.height - 64, 620);
+        return { x: canvas.width / 2 - w / 2, y: canvas.height / 2 - h / 2, w, h };
       }
       if (compact) {
-        const w = Math.min(420, canvas.width * 0.46);
-        return { x: 48, y: 64, w, h: canvas.height - 128 };
+        const w = Math.min(390, canvas.width * 0.52);
+        const h = Math.min(canvas.height - 48, 440);
+        return { x: 28, y: canvas.height / 2 - h / 2, w, h };
       }
       const w = Math.min(520, Math.max(430, canvas.width * 0.30));
       return { x: Math.max(96, canvas.width * 0.065), y: 96, w, h: canvas.height - 192 };
     }
 
     function getMenuRoomPanelRect() {
+      const portrait = isPortraitMenuLayout();
       const compact = isCompactLandscapeMenuLayout();
-      const marginX = compact ? 88 : Math.max(128, canvas.width * 0.13);
-      const marginY = compact ? 54 : 92;
+      if (portrait) {
+        const marginX = 14;
+        const marginY = 26;
+        return {
+          x: marginX,
+          y: marginY,
+          w: canvas.width - marginX * 2,
+          h: canvas.height - marginY * 2,
+        };
+      }
+      const marginX = compact ? 32 : Math.max(128, canvas.width * 0.13);
+      const marginY = compact ? 22 : 92;
       return {
         x: marginX,
         y: marginY,
@@ -10480,12 +10702,13 @@ if (player.stamina <= 0) return false;
 
     function getMenuButtonRects() {
       const p = getMenuLeftPanelRect();
+      const portrait = isPortraitMenuLayout();
       const compact = isCompactLandscapeMenuLayout();
-      const w = Math.min(p.w - 58, compact ? 300 : 360);
-      const h = compact ? 44 : 56;
-      const gap = 14;
-      const x = p.x + 34;
-      const y = p.y + p.h - h * 3 - gap * 2 - 36;
+      const w = Math.min(p.w - (portrait ? 54 : 58), compact ? 300 : 360);
+      const h = portrait ? 48 : (compact ? 42 : 56);
+      const gap = portrait ? 12 : 14;
+      const x = p.x + p.w / 2 - w / 2;
+      const y = p.y + p.h - h * 3 - gap * 2 - (portrait ? 42 : 36);
       return {
         play: { x, y, w, h },
         multiplayer: { x, y: y + h + gap, w, h },
@@ -10495,12 +10718,13 @@ if (player.stamina <= 0) return false;
 
     function getMultiplayerButtonRects() {
       const p = getMenuLeftPanelRect();
+      const portrait = isPortraitMenuLayout();
       const compact = isCompactLandscapeMenuLayout();
-      const w = Math.min(p.w - 58, compact ? 310 : 370);
-      const h = compact ? 44 : 56;
-      const gap = 14;
-      const x = p.x + 34;
-      const y = p.y + p.h - h * 3 - gap * 2 - 36;
+      const w = Math.min(p.w - (portrait ? 54 : 58), compact ? 310 : 370);
+      const h = portrait ? 48 : (compact ? 42 : 56);
+      const gap = portrait ? 12 : 14;
+      const x = p.x + p.w / 2 - w / 2;
+      const y = p.y + p.h - h * 3 - gap * 2 - (portrait ? 42 : 36);
       return {
         create: { x, y, w, h },
         join: { x, y: y + h + gap, w, h },
@@ -10510,31 +10734,39 @@ if (player.stamina <= 0) return false;
 
     function getJoinRoomButtonRects() {
       const p = getMenuRoomPanelRect();
-      const w = Math.min(430, p.w * 0.42);
-      const h = 54;
-      return { cancel: { x: p.x + p.w / 2 - w / 2, y: p.y + p.h - 92, w, h } };
+      const portrait = isPortraitMenuLayout();
+      const compact = isCompactLandscapeMenuLayout();
+      const w = Math.min(p.w - 54, portrait ? 330 : compact ? 360 : 430);
+      const h = portrait ? 48 : compact ? 44 : 54;
+      return { cancel: { x: p.x + p.w / 2 - w / 2, y: p.y + p.h - h - (portrait ? 34 : compact ? 28 : 38), w, h } };
     }
 
     function getRoomLobbyButtonRects() {
       const p = getMenuRoomPanelRect();
-      const w = Math.min(460, p.w * 0.46);
-      const h = 54;
-      const gap = 16;
+      const portrait = isPortraitMenuLayout();
+      const compact = isCompactLandscapeMenuLayout();
+      const w = Math.min(p.w - 54, portrait ? 340 : compact ? 390 : 460);
+      const h = portrait ? 46 : compact ? 42 : 54;
+      const gap = portrait ? 10 : 14;
       const x = p.x + p.w / 2 - w / 2;
-      const y = p.y + p.h - h * 2 - gap - 54;
+      const y = p.y + p.h - h * 2 - gap - (portrait ? 30 : compact ? 24 : 46);
       return { start: { x, y, w, h }, cancel: { x, y: y + h + gap, w, h } };
     }
 
     function getSettingsPanelRect() {
-      const marginX = canvas.width < 900 ? 32 : Math.max(86, canvas.width * 0.08);
-      const marginY = canvas.height < 620 ? 28 : Math.max(54, canvas.height * 0.07);
+      const portrait = isPortraitMenuLayout();
+      const compact = isCompactLandscapeMenuLayout();
+      const marginX = portrait ? 14 : (compact ? 24 : Math.max(86, canvas.width * 0.08));
+      const marginY = portrait ? 24 : (compact ? 18 : Math.max(54, canvas.height * 0.07));
       return { x: marginX, y: marginY, w: canvas.width - marginX * 2, h: canvas.height - marginY * 2 };
     }
 
     function getSettingsLayout(panel = getSettingsPanelRect()) {
       const virtualW = 720;
       const virtualH = 430;
-      const scale = Math.min(1.25, (panel.w - 80) / virtualW, (panel.h - 70) / virtualH);
+      const portrait = isPortraitMenuLayout();
+      const compact = isCompactLandscapeMenuLayout();
+      const scale = Math.min(portrait ? 0.86 : compact ? 0.92 : 1.25, (panel.w - 36) / virtualW, (panel.h - 40) / virtualH);
       const x = panel.x + (panel.w - virtualW * scale) / 2;
       const y = panel.y + (panel.h - virtualH * scale) / 2;
       return {
@@ -10710,19 +10942,20 @@ if (player.stamina <= 0) return false;
       const panel = (game.menuMode === "joinRoom" || game.menuMode === "roomLobby") ? getMenuRoomPanelRect() : getMenuLeftPanelRect();
       drawMenuPanelDecor(panel);
       const portrait = isPortraitMenuLayout();
+      const compact = isCompactLandscapeMenuLayout();
       const titleX = portrait ? panel.x + panel.w / 2 : panel.x + 60;
-      const titleY = panel.y + (portrait ? 82 : 110);
+      const titleY = panel.y + (portrait ? 82 : compact ? 78 : 110);
       const align = portrait ? "center" : "left";
 
       if (game.menuMode === "main") {
-        drawMenuTitle(["DUNGEON", "SHAPES"], titleX, titleY, align, portrait ? 42 : 60);
+        drawMenuTitle(["DUNGEON", "SHAPES"], titleX, titleY, align, portrait ? 42 : compact ? 44 : 60);
         ctx.save();
         ctx.font = "900 12px Inter, Segoe UI, Arial, sans-serif";
         ctx.fillStyle = "rgba(255,255,255,0.50)";
         ctx.textAlign = align;
-        ctx.fillText("DASH / DODGE / SURVIVE", titleX, titleY + (portrait ? 94 : 126));
+        ctx.fillText("DASH / DODGE / SURVIVE", titleX, titleY + (portrait ? 94 : compact ? 88 : 126));
         ctx.fillStyle = "#42dfff";
-        ctx.fillText("ROGUELIKE ROOM BASE", titleX, titleY + (portrait ? 118 : 150));
+        ctx.fillText("ROGUELIKE ROOM BASE", titleX, titleY + (portrait ? 118 : compact ? 110 : 150));
         ctx.restore();
         const b = getMenuButtonRects();
         drawMenuButton(b.play, "JUGAR", true);
@@ -10780,17 +11013,19 @@ if (player.stamina <= 0) return false;
 
     function drawMultiplayerMenu(panel) {
       syncRoomCodeBox();
-      const x = isPortraitMenuLayout() ? panel.x + panel.w / 2 : panel.x + 62;
-      const align = isPortraitMenuLayout() ? "center" : "left";
-      drawMenuKicker("MODO ONLINE", x, panel.y + 62, align);
-      drawMenuTitle(["MULTI", "JUGADOR"], x, panel.y + 108, align, isPortraitMenuLayout() ? 42 : 52);
+      const portrait = isPortraitMenuLayout();
+      const compact = isCompactLandscapeMenuLayout();
+      const x = portrait ? panel.x + panel.w / 2 : panel.x + 62;
+      const align = portrait ? "center" : "left";
+      drawMenuKicker("MODO ONLINE", x, panel.y + (compact ? 46 : 62), align);
+      drawMenuTitle(["MULTI", "JUGADOR"], x, panel.y + (compact ? 86 : 108), align, portrait ? 42 : compact ? 40 : 52);
       ctx.save();
       ctx.font = "900 12px Inter, Segoe UI, Arial, sans-serif";
       ctx.textAlign = align;
       ctx.fillStyle = "rgba(255,255,255,0.52)";
-      ctx.fillText("Creá una sala o entrá con código", x, panel.y + 220);
+      ctx.fillText("Creá una sala o entrá con código", x, panel.y + (compact ? 178 : 220));
       ctx.fillStyle = "#42dfff";
-      ctx.fillText("WEBSOCKET · CLOUDFLARE", x, panel.y + 248);
+      ctx.fillText("WEBSOCKET · CLOUDFLARE", x, panel.y + (compact ? 200 : 248));
       ctx.restore();
       const b = getMultiplayerButtonRects();
       drawMenuButton(b.create, "CREAR SALA", true);
@@ -10801,16 +11036,18 @@ if (player.stamina <= 0) return false;
     function drawJoinRoomMenu(panel) {
       syncRoomCodeBox();
       const cx = panel.x + panel.w / 2;
-      drawMenuKicker("CÓDIGO DE SALA", cx, panel.y + 78, "center");
-      drawMenuTitle(["UNIRSE", "A SALA"], cx, panel.y + 130, "center", 52);
+      const portrait = isPortraitMenuLayout();
+      const compact = isCompactLandscapeMenuLayout();
+      drawMenuKicker("CÓDIGO DE SALA", cx, panel.y + (compact ? 48 : 78), "center");
+      drawMenuTitle(["UNIRSE", "A SALA"], cx, panel.y + (compact ? 94 : 130), "center", portrait ? 44 : compact ? 40 : 52);
       ctx.save();
       ctx.font = "900 13px Inter, Segoe UI, Arial, sans-serif";
       ctx.fillStyle = "rgba(255,255,255,0.54)";
       ctx.textAlign = "center";
-      ctx.fillText("Pedile el código al host y entrá al lobby", cx, panel.y + 252);
+      ctx.fillText("Pedile el código al host y entrá al lobby", cx, panel.y + (compact ? 192 : 252));
       if (game.multiplayer.joinError) {
         ctx.fillStyle = "#ff5572";
-        ctx.fillText(game.multiplayer.joinError, cx, panel.y + panel.h - 118);
+        ctx.fillText(game.multiplayer.joinError, cx, panel.y + panel.h - (compact ? 84 : 118));
       }
       ctx.restore();
       drawMenuButton(getJoinRoomButtonRects().cancel, "VOLVER", false);
@@ -10820,21 +11057,25 @@ if (player.stamina <= 0) return false;
       syncRoomCodeBox();
       const mp = game.multiplayer;
       const cx = panel.x + panel.w / 2;
-      drawMenuKicker(mp.isHost ? "SALA DEL HOST" : "SALA DEL INVITADO", cx, panel.y + 72, "center");
+      const portrait = isPortraitMenuLayout();
+      const compact = isCompactLandscapeMenuLayout();
+      drawMenuKicker(mp.isHost ? "SALA DEL HOST" : "SALA DEL INVITADO", cx, panel.y + (compact ? 40 : 72), "center");
       ctx.save();
       ctx.textAlign = "center";
       ctx.font = "900 12px Inter, Segoe UI, Arial, sans-serif";
       ctx.fillStyle = "rgba(255,255,255,0.52)";
-      ctx.fillText("CÓDIGO DE SALA", cx, panel.y + 112);
-      ctx.font = "950 66px Inter, Segoe UI, Arial, sans-serif";
+      ctx.fillText("CÓDIGO DE SALA", cx, panel.y + (compact ? 72 : 112));
+      ctx.font = `950 ${compact ? 44 : portrait ? 58 : 66}px Inter, Segoe UI, Arial, sans-serif`;
       ctx.fillStyle = game.ruby;
-      ctx.fillText(mp.roomCode || "----", cx, panel.y + 178);
+      ctx.fillText(mp.roomCode || "----", cx, panel.y + (compact ? 126 : portrait ? 170 : 178));
       ctx.restore();
-      const cardW = Math.min(560, panel.w - 180);
+      const b = getRoomLobbyButtonRects();
+      const cardW = Math.max(240, Math.min(560, panel.w - (compact ? 58 : portrait ? 48 : 180)));
       const cardX = cx - cardW / 2;
-      const slotH = 62;
-      const slotGap = 14;
-      const slotY = panel.y + 224;
+      const slotGap = compact ? 7 : portrait ? 10 : 14;
+      const slotY = panel.y + (compact ? 148 : portrait ? 214 : 224);
+      const available = Math.max(126, b.start.y - slotY - 12);
+      const slotH = Math.max(38, Math.min(compact ? 48 : portrait ? 56 : 62, (available - slotGap * 2) / 3));
       for (let i = 0; i < ONLINE_PLAYER_IDS.length; i++) {
         const id = ONLINE_PLAYER_IDS[i];
         const data = onlineRoom.players?.[id];
@@ -10848,7 +11089,6 @@ if (player.stamina <= 0) return false;
           : "Esperando jugador...";
         drawPlayerSlotCard(cardX, slotY + i * (slotH + slotGap), cardW, slotH, label, name, active, id !== "p1");
       }
-      const b = getRoomLobbyButtonRects();
       if (mp.isHost) drawMenuButton(b.start, "EMPEZAR", true);
       drawMenuButton(b.cancel, mp.isHost ? "CANCELAR SALA" : "SALIR", false);
     }
@@ -10861,14 +11101,14 @@ if (player.stamina <= 0) return false;
       ctx.fill();
       ctx.textAlign = "left";
       ctx.textBaseline = "middle";
-      ctx.font = "950 10px Inter, Segoe UI, Arial, sans-serif";
+      ctx.font = `950 ${h < 48 ? 8 : 10}px Inter, Segoe UI, Arial, sans-serif`;
       ctx.fillStyle = active ? (cyan ? "#42dfff" : game.ruby) : "rgba(255,255,255,0.35)";
-      ctx.fillText(label, x + 34, y + 20);
-      ctx.font = "950 18px Inter, Segoe UI, Arial, sans-serif";
+      ctx.fillText(label, x + 34, y + Math.max(15, h * 0.32));
+      ctx.font = `950 ${h < 48 ? 14 : 18}px Inter, Segoe UI, Arial, sans-serif`;
       ctx.fillStyle = active ? "rgba(255,255,255,0.90)" : "rgba(255,255,255,0.42)";
-      ctx.fillText(name || "Esperando jugador...", x + 34, y + h / 2 + 13);
+      ctx.fillText(name || "Esperando jugador...", x + 34, y + h / 2 + (h < 48 ? 10 : 13));
       ctx.beginPath();
-      ctx.arc(x + w - 24, y + 24, 5, 0, Math.PI * 2);
+      ctx.arc(x + w - 24, y + Math.max(18, h * 0.38), 5, 0, Math.PI * 2);
       ctx.fillStyle = active ? "#00ffbb" : "rgba(255,255,255,0.20)";
       ctx.fill();
       ctx.restore();
@@ -10881,10 +11121,12 @@ if (player.stamina <= 0) return false;
         return;
       }
       const panel = getMenuRoomPanelRect();
-      const w = Math.min(470, panel.w * 0.50);
+      const portrait = isPortraitMenuLayout();
+      const compact = isCompactLandscapeMenuLayout();
+      const w = Math.min(panel.w - 54, portrait ? 330 : compact ? 390 : 470);
       const inputW = Math.min(230, w * 0.52);
       const x = panel.x + panel.w / 2 - w / 2;
-      const y = panel.y + 320;
+      const y = panel.y + (compact ? 222 : portrait ? 306 : 320);
       const rect = canvas.getBoundingClientRect();
       const sx = rect.width / Math.max(1, canvas.width);
       const sy = rect.height / Math.max(1, canvas.height);
@@ -11823,6 +12065,59 @@ if (player.stamina <= 0) return false;
       ctx.restore();
     }
 
+    function drawDebugOverlay() {
+      if (!game.debugOverlay) return;
+
+      ctx.save();
+      ctx.globalCompositeOperation = "source-over";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      ctx.font = "800 10px Inter, Segoe UI, Arial, sans-serif";
+
+      const lines = [
+        `online: ${isOnlineMatchActive() ? "open" : onlineRoom.reconnecting ? "reconnecting" : "off"} ${onlineRoom.playerId || "-"}`,
+        `players: ${getOnlineConnectedPlayerIds().join(",") || "-"}`,
+        `wave: ${game.wave} ${game.waveState}`,
+        `aimLock: ${game.preciseAimLockId || "-"}`
+      ];
+
+      const w = 210;
+      const h = 18 + lines.length * 14;
+      drawRoundedRect(12, 12, w, h, 8);
+      ctx.fillStyle = "rgba(0,0,0,0.68)";
+      ctx.fill();
+      ctx.strokeStyle = "rgba(66,223,255,0.65)";
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.fillStyle = "#42dfff";
+      lines.forEach((line, i) => ctx.fillText(line, 22, 22 + i * 14));
+
+      for (const enemy of enemies) {
+        if (!isPreciseAimTargetValid(enemy)) continue;
+        const id = getPreciseAimTargetId(enemy);
+        const locked = id === game.preciseAimLockId;
+        const vx = Number(enemy.netVx) || 0;
+        const vy = Number(enemy.netVy) || 0;
+
+        ctx.save();
+        ctx.textAlign = "center";
+        ctx.font = "800 9px Inter, Segoe UI, Arial, sans-serif";
+        ctx.fillStyle = locked ? "#42dfff" : "rgba(255,255,255,0.65)";
+        ctx.fillText(`${id} ${enemy.type}`, enemy.x, enemy.y - enemy.size / 2 - 24);
+        if (Math.hypot(vx, vy) > 4) {
+          ctx.strokeStyle = locked ? "#42dfff" : "rgba(255,255,255,0.38)";
+          ctx.lineWidth = locked ? 2 : 1;
+          ctx.beginPath();
+          ctx.moveTo(enemy.x, enemy.y);
+          ctx.lineTo(enemy.x + vx * 0.18, enemy.y + vy * 0.18);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      ctx.restore();
+    }
+
     function draw() {
       syncMobileControlsState();
       if (game.state === "menu") {
@@ -11891,6 +12186,7 @@ if (player.stamina <= 0) return false;
 
       // Debug por encima de TODO: juego, HUD, paneles y fades.
       drawDebugHitboxes();
+      drawDebugOverlay();
     }
 
     function keepPlayerOutsideObstacles() {
