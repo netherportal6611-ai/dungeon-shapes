@@ -1142,8 +1142,11 @@
       clearInputs();
     }
 
-    const GAME_VERSION_LABEL = "alpha-09";
+    const GAME_VERSION_LABEL = "alpha-10";
     const WS_LOCAL_URL = "wss://jsab-multiplayer.netherportal6611.workers.dev/ws";
+    const ONLINE_PLAYER_IDS = ["p1", "p2", "p3"];
+    const ONLINE_REMOTE_PRIMARY_COLOR = "#00ff8c";
+    const ONLINE_REMOTE_SECONDARY_COLOR = "#f6ff75";
 
     const onlineRoom = {
       socket: null,
@@ -1265,9 +1268,45 @@
     function getOnlineConnectedPlayerIds() {
       const ids = [];
       const players = onlineRoom.players || {};
-      if (players.p1?.connected || onlineRoom.playerId === "p1") ids.push("p1");
-      if (players.p2?.connected || onlineRoom.playerId === "p2") ids.push("p2");
+      for (const id of ONLINE_PLAYER_IDS) {
+        if (players[id]?.connected || onlineRoom.playerId === id) ids.push(id);
+      }
       return ids.length ? ids : (onlineRoom.playerId ? [onlineRoom.playerId] : []);
+    }
+
+    function getOnlineRemotePlayerIds() {
+      if (!isOnlineMatchActive() || !onlineRoom.playerId) return [];
+      return getOnlineConnectedPlayerIds().filter(id => id !== onlineRoom.playerId);
+    }
+
+    function getOnlineRemotePlayers() {
+      if (!isOnlineMatchActive() || !onlineRoom.players) return [];
+      return getOnlineRemotePlayerIds()
+        .map(id => ({ id, player: onlineRoom.players[id] }))
+        .filter(entry => entry.player && entry.player.connected);
+    }
+
+    function getOnlineRemoteColor(remoteId) {
+      const remoteIds = ONLINE_PLAYER_IDS.filter(id => id !== onlineRoom.playerId);
+      return remoteIds.indexOf(remoteId) <= 0 ? ONLINE_REMOTE_PRIMARY_COLOR : ONLINE_REMOTE_SECONDARY_COLOR;
+    }
+
+    function colorWithAlpha(hex, alpha = 1) {
+      const clean = String(hex || "").replace("#", "");
+      if (!/^[0-9a-fA-F]{6}$/.test(clean)) return `rgba(0,255,140,${alpha})`;
+      const r = parseInt(clean.slice(0, 2), 16);
+      const g = parseInt(clean.slice(2, 4), 16);
+      const b = parseInt(clean.slice(4, 6), 16);
+      return `rgba(${r},${g},${b},${alpha})`;
+    }
+
+    function getOnlinePlayerDisplayName(playerId, data = null) {
+      const playerData = data || onlineRoom.players?.[playerId] || null;
+      if (playerData?.name) return playerData.name;
+      if (playerId === "p1") return "Host";
+      if (playerId === "p2") return "Jugador 2";
+      if (playerId === "p3") return "Jugador 3";
+      return "Jugador";
     }
 
     function applyOnlineIntermissionSkipVoteState(state = {}) {
@@ -1293,7 +1332,7 @@
         resetOnlineIntermissionSkipVotes(game.wave);
       }
 
-      for (const id of ["p1", "p2"]) {
+      for (const id of ONLINE_PLAYER_IDS) {
         const p = players[id];
         if (!p || !p.connected) continue;
         if (Number(p.skipVoteWave || 0) === Number(game.wave)) {
@@ -1367,16 +1406,7 @@
       return `SALTEAR ${count}/${required}`;
     }
 
-    const remoteOnlineVisual = {
-      id: "",
-      initialized: false,
-      x: 0,
-      y: 0,
-      targetX: 0,
-      targetY: 0,
-      dashPulse: 0,
-      lastDash: false,
-    };
+    const remoteOnlineVisuals = {};
 
 
 
@@ -1441,7 +1471,7 @@
         damage: Number(shot.damage) || 1,
         precise: !!shot.precise,
         weapon: shot.weapon || "normal",
-        color: "#00ff8c",
+        color: getOnlineRemoteColor(shot.owner || ""),
         rotation: 0,
         rotateTimer: 0,
         life: Math.max(0.2, Math.min(3, Number(shot.life) || 1.8)),
@@ -1648,27 +1678,23 @@
     }
 
     function isOnlineGuest() {
-      return isOnlineMatchActive() && onlineRoom.playerId === "p2";
+      return isOnlineMatchActive() && onlineRoom.playerId && onlineRoom.playerId !== "p1";
     }
 
     function getRemoteOnlinePlayer() {
-      if (!isOnlineMatchActive() || !onlineRoom.players || !onlineRoom.playerId) return null;
-      const remoteId = onlineRoom.playerId === "p1" ? "p2" : "p1";
-      const remote = onlineRoom.players[remoteId];
-      return remote && remote.connected ? remote : null;
+      const first = getOnlineRemotePlayers()[0];
+      return first ? first.player : null;
     }
 
     function isOnlineCoopXPChoiceBlocking() {
       if (!isOnlineMatchActive() || game.state !== "playing") return false;
-      const remote = getRemoteOnlinePlayer();
-      return !!game.xpChoiceOpen || !!(remote && remote.xpChoiceOpen);
+      return !!game.xpChoiceOpen || getOnlineRemotePlayers().some(entry => !!entry.player.xpChoiceOpen);
     }
 
     function isOnlineCoopOrbBlocking() {
       if (!isOnlineMatchActive() || game.state !== "playing") return false;
       if (game.waveState !== "intermission") return false;
-      const remote = getRemoteOnlinePlayer();
-      return !!game.upgradePickup || !!game.upgradeShopOpen || !!(remote && remote.orbBlocking);
+      return !!game.upgradePickup || !!game.upgradeShopOpen || getOnlineRemotePlayers().some(entry => !!entry.player.orbBlocking);
     }
 
     function isOnlineCoopPauseBlocking() {
@@ -1759,22 +1785,34 @@
     }
 
 
-    function getRemoteOnlinePlayerWorldPositionForHost() {
-      if (!isOnlineHost() || !onlineRoom.players) return null;
-      const remote = onlineRoom.players.p2;
-      if (!remote || !remote.connected || remote.downed || Number(remote.hp || 0) <= 0) return null;
-
-      let x = Number(remote.x);
-      let y = Number(remote.y);
-      if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    function getRemoteOnlinePlayerWorldPositionsForHost() {
+      if (!isOnlineHost() || !onlineRoom.players) return [];
 
       const rr = room.getRect();
-      if (x >= -0.25 && x <= 1.25 && y >= -0.25 && y <= 1.25) {
-        x = rr.x + x * rr.w;
-        y = rr.y + y * rr.h;
+      const positions = [];
+
+      for (const remoteId of ONLINE_PLAYER_IDS) {
+        if (remoteId === onlineRoom.playerId) continue;
+        const remote = onlineRoom.players[remoteId];
+        if (!remote || !remote.connected || remote.downed || Number(remote.hp || 0) <= 0) continue;
+
+        let x = Number(remote.x);
+        let y = Number(remote.y);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+
+        if (x >= -0.25 && x <= 1.25 && y >= -0.25 && y <= 1.25) {
+          x = rr.x + x * rr.w;
+          y = rr.y + y * rr.h;
+        }
+
+        positions.push({ x, y, id: remoteId, isLocal: false, name: getOnlinePlayerDisplayName(remoteId, remote) });
       }
 
-      return { x, y, id: "p2", isLocal: false, name: remote.name || "Jugador 2" };
+      return positions;
+    }
+
+    function getRemoteOnlinePlayerWorldPositionForHost() {
+      return getRemoteOnlinePlayerWorldPositionsForHost()[0] || null;
     }
 
 
@@ -1835,6 +1873,14 @@
         return true;
       } catch {
         return false;
+      }
+    }
+
+    function sendOnlinePlayerRewardToRemotePlayers(enemy, includeXP = true) {
+      if (!isOnlineHost()) return;
+      for (const id of getOnlineConnectedPlayerIds()) {
+        if (id === onlineRoom.playerId) continue;
+        sendOnlinePlayerReward(id, enemy, includeXP);
       }
     }
 
@@ -1941,9 +1987,9 @@
         if (killerId === onlineRoom.playerId) {
           addEnemyKillPoints(enemy);
         } else {
-          // Kill del invitado: invitado recibe puntos+XP, host recibe solo puntos compartidos.
+          // Kill de invitado: todos reciben puntos+XP, pero el host conserva la autoridad.
           addSharedKillRewards(enemy);
-          sendOnlinePlayerReward(killerId, enemy, true);
+          sendOnlinePlayerRewardToRemotePlayers(enemy, true);
         }
 
         spawnEnemyDeathPulse(enemy.x, enemy.y);
@@ -2048,20 +2094,21 @@
       if (!onlineRoom.playerId || !onlineRoom.players) return null;
       if (player.downed) return null;
 
-      const remoteId = onlineRoom.playerId === "p1" ? "p2" : "p1";
-      const remote = onlineRoom.players[remoteId];
-      if (!remote || !remote.connected || !remote.downed) return null;
+      let best = null;
+      for (const { id, player: remote } of getOnlineRemotePlayers()) {
+        if (!remote.downed) continue;
 
-      const pos = getRemoteOnlineTargetPosition(remote);
-      if (!pos) return null;
+        const pos = getRemoteOnlineTargetPosition(remote);
+        if (!pos) continue;
 
-      const dx = pos.x - player.x;
-      const dy = pos.y - player.y;
-      const dist = Math.hypot(dx, dy);
+        const dx = pos.x - player.x;
+        const dy = pos.y - player.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist > onlineReviveState.range) continue;
+        if (!best || dist < best.dist) best = { id, remote, x: pos.x, y: pos.y, dist };
+      }
 
-      if (dist > onlineReviveState.range) return null;
-
-      return { id: remoteId, remote, x: pos.x, y: pos.y, dist };
+      return best;
     }
 
     function isReviveInputHeld() {
@@ -2103,11 +2150,16 @@
 
     function checkOnlineCoopGameOver() {
       if (!isOnlineMatchActive() || game.state !== "playing") return;
-      const remoteId = onlineRoom.playerId === "p1" ? "p2" : "p1";
-      const remote = onlineRoom.players?.[remoteId];
-      if (!remote || !remote.connected) return;
+      const connectedIds = getOnlineConnectedPlayerIds();
+      if (!connectedIds.length) return;
 
-      if (player.downed && remote.downed) {
+      const allDowned = connectedIds.every(id => {
+        if (id === onlineRoom.playerId) return !!player.downed;
+        const remote = onlineRoom.players?.[id];
+        return !!remote?.downed || Number(remote?.hp || 0) <= 0;
+      });
+
+      if (allDowned) {
         if (!requestOnlineGameOver("both_downed")) startGameOver();
       }
     }
@@ -2124,22 +2176,28 @@
         ? { x: player.x, y: player.y, id: onlineRoom.playerId || "p1", isLocal: true, name: game.playerName || "Jugador" }
         : null;
 
-      // Offline o invitado: solo existe el jugador local para la simulación.
+      // Offline o invitado: solo existe el jugador local para la simulacion.
       if (!isOnlineHost()) return localTarget;
 
-      const remoteTarget = getRemoteOnlinePlayerWorldPositionForHost();
+      const targets = [];
+      if (localTarget) targets.push(localTarget);
+      targets.push(...getRemoteOnlinePlayerWorldPositionsForHost());
 
-      // Si hay un jugador caído, los enemigos dejan de targetearlo y van por el vivo.
-      if (!localTarget && !remoteTarget) return null;
-      if (!localTarget) return remoteTarget;
-      if (!remoteTarget) return localTarget;
+      if (!targets.length) return null;
 
-      const localD = (localTarget.x - enemy.x) ** 2 + (localTarget.y - enemy.y) ** 2;
-      const remoteD = (remoteTarget.x - enemy.x) ** 2 + (remoteTarget.y - enemy.y) ** 2;
+      let best = targets[0];
+      let bestD = (best.x - enemy.x) ** 2 + (best.y - enemy.y) ** 2;
+      for (let i = 1; i < targets.length; i++) {
+        const target = targets[i];
+        const d = (target.x - enemy.x) ** 2 + (target.y - enemy.y) ** 2;
+        if (d < bestD) {
+          best = target;
+          bestD = d;
+        }
+      }
 
-      return remoteD < localD ? remoteTarget : localTarget;
+      return best;
     }
-
 
     function serializeOnlineHostileProjectile(p) {
       const pos = normalizeRoomPoint(p.x, p.y);
@@ -2812,11 +2870,7 @@
 
 
     function getRemoteOnlinePlayerData() {
-      if (!onlineRoom.playerId || !onlineRoom.players) return null;
-      const remoteId = onlineRoom.playerId === "p1" ? "p2" : "p1";
-      const remote = onlineRoom.players[remoteId];
-      if (!remote || !remote.connected) return null;
-      return { remoteId, remote };
+      return getOnlineRemotePlayers()[0] || null;
     }
 
     function getRemoteOnlineTargetPosition(remote) {
@@ -2835,140 +2889,150 @@
 
     function updateRemoteOnlineVisual(dt) {
       if (game.state !== "playing") {
-        remoteOnlineVisual.initialized = false;
+        for (const id of Object.keys(remoteOnlineVisuals)) remoteOnlineVisuals[id].initialized = false;
         return;
       }
 
-      const data = getRemoteOnlinePlayerData();
-      if (!data) {
-        remoteOnlineVisual.initialized = false;
-        return;
+      const activeIds = new Set();
+      for (const data of getOnlineRemotePlayers()) {
+        const remoteId = data.id;
+        const remote = data.player;
+        const target = getRemoteOnlineTargetPosition(remote);
+        if (!target) continue;
+
+        activeIds.add(remoteId);
+        const visual = remoteOnlineVisuals[remoteId] || (remoteOnlineVisuals[remoteId] = {
+          initialized: false,
+          x: 0,
+          y: 0,
+          targetX: 0,
+          targetY: 0,
+          dashPulse: 0,
+          lastDash: false,
+        });
+
+        if (!visual.initialized) {
+          visual.x = target.x;
+          visual.y = target.y;
+          visual.targetX = target.x;
+          visual.targetY = target.y;
+          visual.initialized = true;
+          visual.dashPulse = 0;
+          visual.lastDash = !!remote.input?.dash;
+          continue;
+        }
+
+        visual.targetX = target.x;
+        visual.targetY = target.y;
+
+        const smoothing = 1 - Math.exp(-dt * 18);
+        visual.x += (visual.targetX - visual.x) * smoothing;
+        visual.y += (visual.targetY - visual.y) * smoothing;
+
+        const isDashing = !!remote.input?.dash;
+        if (isDashing && !visual.lastDash) {
+          visual.dashPulse = 1;
+        }
+        visual.lastDash = isDashing;
+        visual.dashPulse = Math.max(0, visual.dashPulse - dt * 3.6);
       }
 
-      const target = getRemoteOnlineTargetPosition(data.remote);
-      if (!target) {
-        remoteOnlineVisual.initialized = false;
-        return;
+      for (const id of Object.keys(remoteOnlineVisuals)) {
+        if (!activeIds.has(id)) remoteOnlineVisuals[id].initialized = false;
       }
-
-      if (remoteOnlineVisual.id !== data.remoteId || !remoteOnlineVisual.initialized) {
-        remoteOnlineVisual.id = data.remoteId;
-        remoteOnlineVisual.x = target.x;
-        remoteOnlineVisual.y = target.y;
-        remoteOnlineVisual.targetX = target.x;
-        remoteOnlineVisual.targetY = target.y;
-        remoteOnlineVisual.initialized = true;
-        remoteOnlineVisual.dashPulse = 0;
-        remoteOnlineVisual.lastDash = !!data.remote.input?.dash;
-        return;
-      }
-
-      remoteOnlineVisual.targetX = target.x;
-      remoteOnlineVisual.targetY = target.y;
-
-      const smoothing = 1 - Math.exp(-dt * 18);
-      remoteOnlineVisual.x += (remoteOnlineVisual.targetX - remoteOnlineVisual.x) * smoothing;
-      remoteOnlineVisual.y += (remoteOnlineVisual.targetY - remoteOnlineVisual.y) * smoothing;
-
-      const isDashing = !!data.remote.input?.dash;
-      if (isDashing && !remoteOnlineVisual.lastDash) {
-        remoteOnlineVisual.dashPulse = 1;
-      }
-      remoteOnlineVisual.lastDash = isDashing;
-      remoteOnlineVisual.dashPulse = Math.max(0, remoteOnlineVisual.dashPulse - dt * 3.6);
     }
 
     function drawRemoteOnlinePlayer() {
       if (game.state !== "playing") return;
 
-      const data = getRemoteOnlinePlayerData();
-      if (!data) return;
+      for (const data of getOnlineRemotePlayers()) {
+        const target = getRemoteOnlineTargetPosition(data.player);
+        if (!target) continue;
 
-      const target = getRemoteOnlineTargetPosition(data.remote);
-      if (!target) return;
+        const visual = remoteOnlineVisuals[data.id];
+        const x = visual?.initialized ? visual.x : target.x;
+        const y = visual?.initialized ? visual.y : target.y;
+        const remoteColor = getOnlineRemoteColor(data.id);
 
-      const x = remoteOnlineVisual.initialized ? remoteOnlineVisual.x : target.x;
-      const y = remoteOnlineVisual.initialized ? remoteOnlineVisual.y : target.y;
+        const name = getOnlinePlayerDisplayName(data.id, data.player);
+        const isRemoteDowned = !!data.player.downed || Number(data.player.hp || 0) <= 0;
+        const isDashing = !isRemoteDowned && !!data.player.input?.dash;
+        const dashPulse = Math.max(visual?.dashPulse || 0, isDashing ? 0.55 : 0);
 
-      const name = data.remote.name || (data.remoteId === "p1" ? "Jugador 1" : "Jugador 2");
-      const isRemoteDowned = !!data.remote.downed || Number(data.remote.hp || 0) <= 0;
-      const isDashing = !isRemoteDowned && !!data.remote.input?.dash;
-      const dashPulse = Math.max(remoteOnlineVisual.dashPulse || 0, isDashing ? 0.55 : 0);
+        const rr = room.getRect();
+        let aimX = Number(data.player.aimX);
+        let aimY = Number(data.player.aimY);
 
-      const rr = room.getRect();
-      let aimX = Number(data.remote.aimX);
-      let aimY = Number(data.remote.aimY);
-
-      if (Number.isFinite(aimX) && Number.isFinite(aimY)) {
-        if (aimX >= -0.25 && aimX <= 1.25 && aimY >= -0.25 && aimY <= 1.25) {
-          aimX = rr.x + aimX * rr.w;
-          aimY = rr.y + aimY * rr.h;
+        if (Number.isFinite(aimX) && Number.isFinite(aimY)) {
+          if (aimX >= -0.25 && aimX <= 1.25 && aimY >= -0.25 && aimY <= 1.25) {
+            aimX = rr.x + aimX * rr.w;
+            aimY = rr.y + aimY * rr.h;
+          }
+        } else {
+          aimX = x + 1;
+          aimY = y;
         }
-      } else {
-        aimX = x + 1;
-        aimY = y;
-      }
 
-      const angle = isRemoteDowned ? Math.PI / 4 : Math.atan2(aimY - y, aimX - x);
-      const size = 28;
-      const dashStretch = isDashing ? 1.42 : 1;
+        const angle = isRemoteDowned ? Math.PI / 4 : Math.atan2(aimY - y, aimX - x);
+        const size = 28;
+        const dashStretch = isDashing ? 1.42 : 1;
 
-      ctx.save();
-
-      if (dashPulse > 0) {
-        ctx.globalAlpha = 0.16 + dashPulse * 0.20;
-        ctx.strokeStyle = "#00ff8c";
-        ctx.lineWidth = 5;
-        ctx.beginPath();
-        ctx.arc(x, y, size * 1.05 + dashPulse * 16, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-
-      ctx.globalAlpha = isRemoteDowned ? 0.45 + Math.sin(game.time * 8) * 0.08 : 0.96;
-      ctx.translate(x, y);
-      ctx.rotate(angle);
-      ctx.scale(dashStretch, isDashing ? 0.82 : 1);
-
-      ctx.fillStyle = isRemoteDowned ? "rgba(0,255,140,0.42)" : "#00ff8c";
-      ctx.fillRect(-size / 2, -size / 2, size, size);
-
-      ctx.fillStyle = "rgba(255,255,255,0.22)";
-      ctx.fillRect(-size / 2, -size / 2, size, 6);
-
-      ctx.restore();
-
-      const hp = Math.max(0, Math.min(Number(data.remote.maxHp || 3), Number(data.remote.hp ?? data.remote.maxHp ?? 3)));
-      const maxHp = Math.max(1, Number(data.remote.maxHp || 3));
-      const hpW = 42;
-      const hpH = 6;
-      const hpX = x - hpW / 2;
-      const hpY = y - size / 2 - 15;
-
-      drawRoundedRect(hpX, hpY, hpW, hpH, 4);
-      ctx.fillStyle = "rgba(0,0,0,0.72)";
-      ctx.fill();
-
-      drawRoundedRect(hpX, hpY, hpW, hpH, 4);
-      ctx.strokeStyle = "rgba(236,0,116,0.95)";
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-
-      if (hp > 0) {
         ctx.save();
-        drawRoundedRect(hpX + 2, hpY + 2, hpW - 4, hpH - 4, 3);
-        ctx.clip();
-        ctx.fillStyle = "#ec0074";
-        ctx.fillRect(hpX + 2, hpY + 2, (hpW - 4) * (hp / maxHp), hpH - 4);
+
+        if (dashPulse > 0) {
+          ctx.globalAlpha = 0.16 + dashPulse * 0.20;
+          ctx.strokeStyle = remoteColor;
+          ctx.lineWidth = 5;
+          ctx.beginPath();
+          ctx.arc(x, y, size * 1.05 + dashPulse * 16, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+
+        ctx.globalAlpha = isRemoteDowned ? 0.45 + Math.sin(game.time * 8) * 0.08 : 0.96;
+        ctx.translate(x, y);
+        ctx.rotate(angle);
+        ctx.scale(dashStretch, isDashing ? 0.82 : 1);
+
+        ctx.fillStyle = isRemoteDowned ? colorWithAlpha(remoteColor, 0.42) : remoteColor;
+        ctx.fillRect(-size / 2, -size / 2, size, size);
+
+        ctx.fillStyle = "rgba(255,255,255,0.22)";
+        ctx.fillRect(-size / 2, -size / 2, size, 6);
+
         ctx.restore();
+
+        const hp = Math.max(0, Math.min(Number(data.player.maxHp || 3), Number(data.player.hp ?? data.player.maxHp ?? 3)));
+        const maxHp = Math.max(1, Number(data.player.maxHp || 3));
+        const hpW = 42;
+        const hpH = 6;
+        const hpX = x - hpW / 2;
+        const hpY = y - size / 2 - 15;
+
+        drawRoundedRect(hpX, hpY, hpW, hpH, 4);
+        ctx.fillStyle = "rgba(0,0,0,0.72)";
+        ctx.fill();
+
+        drawRoundedRect(hpX, hpY, hpW, hpH, 4);
+        ctx.strokeStyle = "rgba(236,0,116,0.95)";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        if (hp > 0) {
+          ctx.save();
+          drawRoundedRect(hpX + 2, hpY + 2, hpW - 4, hpH - 4, 3);
+          ctx.clip();
+          ctx.fillStyle = "#ec0074";
+          ctx.fillRect(hpX + 2, hpY + 2, (hpW - 4) * (hp / maxHp), hpH - 4);
+          ctx.restore();
+        }
+
+        ctx.font = "900 11px Inter, Segoe UI, Arial, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = "rgba(255,255,255,0.92)";
+        ctx.fillText(name.toUpperCase(), x, y - size / 2 - 27);
       }
-
-      ctx.font = "900 11px Inter, Segoe UI, Arial, sans-serif";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillStyle = "rgba(255,255,255,0.92)";
-      ctx.fillText(name.toUpperCase(), x, y - size / 2 - 27);
     }
-
 
     function getOnlinePlayerName(fallback = "Jugador") {
       const name = (game.playerName || "").trim();
@@ -3171,15 +3235,17 @@
     }
 
     function syncOnlineLobbyPlayers(players) {
-      const p1 = players?.p1;
-      const p2 = players?.p2;
+      const local = players?.[onlineRoom.playerId];
+      const remoteNames = ONLINE_PLAYER_IDS
+        .filter(id => id !== onlineRoom.playerId && players?.[id]?.connected)
+        .map(id => getOnlinePlayerDisplayName(id, players[id]));
 
       if (onlineRoom.playerId === "p1") {
-        game.multiplayer.localPlayerName = p1?.name || getOnlinePlayerName("Jugador 1");
-        game.multiplayer.remotePlayerName = p2?.connected ? (p2.name || "Jugador 2") : "Esperando jugador...";
-      } else if (onlineRoom.playerId === "p2") {
-        game.multiplayer.localPlayerName = p2?.name || getOnlinePlayerName("Jugador 2");
-        game.multiplayer.remotePlayerName = p1?.connected ? (p1.name || "Host") : "Host";
+        game.multiplayer.localPlayerName = local?.name || getOnlinePlayerName("Jugador 1");
+        game.multiplayer.remotePlayerName = remoteNames.length ? remoteNames.join(" + ") : "Esperando jugador...";
+      } else if (onlineRoom.playerId) {
+        game.multiplayer.localPlayerName = local?.name || getOnlinePlayerName(onlineRoom.playerId === "p2" ? "Jugador 2" : "Jugador 3");
+        game.multiplayer.remotePlayerName = remoteNames.length ? remoteNames.join(" + ") : "Host";
       } else {
         game.multiplayer.localPlayerName = getOnlinePlayerName("Jugador");
         game.multiplayer.remotePlayerName = "Esperando jugador...";
@@ -5214,11 +5280,11 @@
       for (const enemy of enemies) {
         if (!enemy || enemy._mpHpScaled) continue;
         enemy._mpHpScaled = true;
-        enemy.hp = Math.ceil((Number(enemy.hp) || 1) * 1.5);
-        enemy.maxHp = Math.ceil((Number(enemy.maxHp) || enemy.hp || 1) * 1.5);
+        enemy.hp = Math.ceil((Number(enemy.hp) || 1) * 2);
+        enemy.maxHp = Math.ceil((Number(enemy.maxHp) || enemy.hp || 1) * 2);
         enemy.hpVisual = enemy.hp;
-        if (enemy.shieldHp) enemy.shieldHp = Math.ceil(enemy.shieldHp * 1.5);
-        if (enemy.shieldMaxHp) enemy.shieldMaxHp = Math.ceil(enemy.shieldMaxHp * 1.5);
+        if (enemy.shieldHp) enemy.shieldHp = Math.ceil(enemy.shieldHp * 2);
+        if (enemy.shieldMaxHp) enemy.shieldMaxHp = Math.ceil(enemy.shieldMaxHp * 2);
       }
     }
 
@@ -5706,7 +5772,7 @@
       // Online: puntos y XP se ganan de forma compartida.
       // El gasto de puntos y la elección de mejoras siguen siendo locales/separados.
       if (isOnlineHost()) {
-        sendOnlinePlayerReward("p2", enemy, true);
+        sendOnlinePlayerRewardToRemotePlayers(enemy, true);
       }
 
       grantEnemyXP(enemy);
@@ -7040,12 +7106,13 @@
               damagePlayer();
             }
             if (isOnlineHost() && hazard.remoteHitTimer <= 0) {
-              const remote = onlineRoom.players?.p2;
-              const remotePos = getRemoteOnlinePlayerWorldPositionForHost();
-              if (remote && remote.connected && remotePos && !isRemoteOnlinePlayerDamageInvulnerable(remote) &&
-                  linebreakerLaserHitsPoint(hazard, remotePos.x, remotePos.y)) {
-                if (sendOnlinePlayerDamage("p2", 1, "linebreaker_laser")) {
+              for (const remotePos of getRemoteOnlinePlayerWorldPositionsForHost()) {
+                const remote = onlineRoom.players?.[remotePos.id];
+                if (remote && remote.connected && !isRemoteOnlinePlayerDamageInvulnerable(remote) &&
+                    linebreakerLaserHitsPoint(hazard, remotePos.x, remotePos.y) &&
+                    sendOnlinePlayerDamage(remotePos.id, 1, "linebreaker_laser")) {
                   hazard.remoteHitTimer = 0.55;
+                  break;
                 }
               }
             }
@@ -7485,23 +7552,21 @@ if (player.stamina <= 0) return false;
         return true;
       }
 
-      // Host daña al jugador remoto si el proyectil enemigo le pega.
+      // Host dana al jugador remoto si el proyectil enemigo le pega.
       if (isOnlineHost()) {
-        const remote = onlineRoom.players?.p2;
-        if (remote && remote.connected && !isRemoteOnlinePlayerDamageInvulnerable(remote)) {
-          const remotePos = getRemoteOnlinePlayerWorldPositionForHost();
-          if (remotePos) {
+        for (const remotePos of getRemoteOnlinePlayerWorldPositionsForHost()) {
+          const remote = onlineRoom.players?.[remotePos.id];
+          if (remote && remote.connected && !isRemoteOnlinePlayerDamageInvulnerable(remote)) {
             const dx = p.x - remotePos.x;
             const dy = p.y - remotePos.y;
             const hit = dx * dx + dy * dy <= Math.pow(projectileRadius + getPlayerHitRadius(), 2);
 
-            if (hit && sendOnlinePlayerDamage("p2", p.damage || 1, "enemy_projectile")) {
+            if (hit && sendOnlinePlayerDamage(remotePos.id, p.damage || 1, "enemy_projectile")) {
               return true;
             }
           }
         }
       }
-
       return false;
     }
 
@@ -10626,8 +10691,22 @@ if (player.stamina <= 0) return false;
       ctx.restore();
       const cardW = Math.min(560, panel.w - 180);
       const cardX = cx - cardW / 2;
-      drawPlayerSlotCard(cardX, panel.y + 230, cardW, 70, mp.isHost ? "VOS · HOST" : "JUGADOR 1 · HOST", mp.isHost ? mp.localPlayerName : mp.remotePlayerName, true, false);
-      drawPlayerSlotCard(cardX, panel.y + 318, cardW, 70, mp.isHost ? "JUGADOR 2 · INVITADO" : "VOS · INVITADO", mp.isHost ? mp.remotePlayerName : mp.localPlayerName, !!mp.remotePlayerName && mp.remotePlayerName !== "Esperando jugador...", true);
+      const slotH = 62;
+      const slotGap = 14;
+      const slotY = panel.y + 224;
+      for (let i = 0; i < ONLINE_PLAYER_IDS.length; i++) {
+        const id = ONLINE_PLAYER_IDS[i];
+        const data = onlineRoom.players?.[id];
+        const active = !!data?.connected || onlineRoom.playerId === id;
+        const isLocal = onlineRoom.playerId === id;
+        const label = id === "p1"
+          ? (isLocal ? "VOS - HOST" : "JUGADOR 1 - HOST")
+          : (isLocal ? "VOS - INVITADO" : `JUGADOR ${i + 1} - INVITADO`);
+        const name = active
+          ? (isLocal ? mp.localPlayerName : getOnlinePlayerDisplayName(id, data))
+          : "Esperando jugador...";
+        drawPlayerSlotCard(cardX, slotY + i * (slotH + slotGap), cardW, slotH, label, name, active, id !== "p1");
+      }
       const b = getRoomLobbyButtonRects();
       if (mp.isHost) drawMenuButton(b.start, "EMPEZAR", true);
       drawMenuButton(b.cancel, mp.isHost ? "CANCELAR SALA" : "SALIR", false);
@@ -11401,8 +11480,7 @@ if (player.stamina <= 0) return false;
       if (!isOnlineMatchActive() || game.state !== "playing") return;
 
       const target = getRemoteDownedTargetForRevive();
-      const remoteId = onlineRoom.playerId === "p1" ? "p2" : "p1";
-      const remote = onlineRoom.players?.[remoteId];
+      const anyRemoteDowned = getOnlineRemotePlayers().some(entry => !!entry.player.downed);
 
       ctx.save();
       ctx.textAlign = "center";
@@ -11417,7 +11495,7 @@ if (player.stamina <= 0) return false;
         ctx.font = "900 13px Inter, Montserrat, Arial, sans-serif";
         ctx.fillStyle = "rgba(255,255,255,0.72)";
         ctx.fillText("esperá a que tu compañero te reviva", cx, cy + 28);
-      } else if (remote?.downed) {
+      } else if (anyRemoteDowned) {
         const cx = canvas.width / 2;
         const cy = canvas.height * 0.18;
         ctx.font = "1000 20px Inter, Montserrat, Arial, sans-serif";
