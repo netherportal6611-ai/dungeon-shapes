@@ -1142,7 +1142,7 @@
       clearInputs();
     }
 
-    const GAME_VERSION_LABEL = "alpha-11";
+    const GAME_VERSION_LABEL = "alpha-12";
     const WS_LOCAL_URL = "wss://jsab-multiplayer.netherportal6611.workers.dev/ws";
     const ONLINE_PLAYER_IDS = ["p1", "p2", "p3"];
     const ONLINE_REMOTE_PRIMARY_COLOR = "#00ff8c";
@@ -1161,6 +1161,7 @@
     let onlineEnemyIdCounter = 1;
     let onlineRingIdCounter = 1;
     let onlineHazardIdCounter = 1;
+    let preciseAimTargetIdCounter = 1;
     let onlineLastEnemySnapshotAt = 0;
     const onlineAttackEventSeen = new Set();
     const onlineDamageCooldowns = {};
@@ -3637,6 +3638,8 @@
       rightAbility: "pulsador", // pulsador, preciseShot
       preciseShotCooldown: 0,
       preciseShotInterval: 0.2,
+      preciseAimLockId: "",
+      preciseAimLockStartedAt: 0,
 
       // Pickup de cura antes del boss de oleada 9.
       healPickup: null,
@@ -4855,6 +4858,117 @@
       return game.multiShotInterval * comboMultiplier * upgradeMultiplier;
     }
 
+    function getPreciseAimTargetId(enemy) {
+      if (!enemy) return "";
+      if (!enemy._preciseAimId) {
+        enemy._preciseAimId = enemy._onlineId || `aim-${preciseAimTargetIdCounter++}`;
+      }
+      return enemy._preciseAimId;
+    }
+
+    function isPreciseAimTargetValid(enemy) {
+      return !!enemy &&
+        Number(enemy.hp || 0) > 0 &&
+        Number.isFinite(Number(enemy.x)) &&
+        Number.isFinite(Number(enemy.y));
+    }
+
+    function getPreciseAimLockedEnemy() {
+      const lockId = game.preciseAimLockId || "";
+      if (!lockId) return null;
+
+      const enemy = enemies.find(e => isPreciseAimTargetValid(e) && getPreciseAimTargetId(e) === lockId);
+      if (!enemy) {
+        clearPreciseAimLock();
+        return null;
+      }
+
+      return enemy;
+    }
+
+    function clearPreciseAimLock() {
+      game.preciseAimLockId = "";
+      game.preciseAimLockStartedAt = 0;
+    }
+
+    function getPreciseAimPointForEnemy(enemy, origin = null, projectileSpeed = 680) {
+      if (!enemy) return { x: player.x, y: player.y };
+
+      const base = { x: enemy.x, y: enemy.y };
+      if (enemy.type !== "kamikaze") return base;
+
+      const ox = Number(origin?.x);
+      const oy = Number(origin?.y);
+      const fromX = Number.isFinite(ox) ? ox : player.x;
+      const fromY = Number.isFinite(oy) ? oy : player.y;
+      const dist = Math.hypot(enemy.x - fromX, enemy.y - fromY);
+      const travelLead = dist / Math.max(1, projectileSpeed) * 0.34;
+      const snapshotLead = isOnlineGuest() ? 0.10 : 0.04;
+      const leadTime = Math.min(0.24, snapshotLead + travelLead);
+      const speed = Number(enemy.speed) || 150;
+      const rot = Number(enemy.rotation) || 0;
+
+      return {
+        x: enemy.x + Math.cos(rot) * speed * leadTime,
+        y: enemy.y + Math.sin(rot) * speed * leadTime,
+      };
+    }
+
+    function acquirePreciseAimTarget() {
+      const locked = getPreciseAimLockedEnemy();
+      if (locked) return locked;
+
+      const aimDx = mouse.x - player.x;
+      const aimDy = mouse.y - player.y;
+      const aimLen = Math.hypot(aimDx, aimDy) || 1;
+      const nx = aimDx / aimLen;
+      const ny = aimDy / aimLen;
+
+      let best = null;
+      let bestScore = Infinity;
+
+      for (const enemy of enemies) {
+        if (!isPreciseAimTargetValid(enemy)) continue;
+
+        const point = getPreciseAimPointForEnemy(enemy, player, 680);
+        const ex = point.x - player.x;
+        const ey = point.y - player.y;
+        const dist = Math.hypot(ex, ey);
+        const forward = ex * nx + ey * ny;
+        if (forward < -80) continue;
+
+        const perpendicular = Math.abs(ex * ny - ey * nx);
+        const cursorDist = Math.hypot(point.x - mouse.x, point.y - mouse.y);
+        const allowedMiss = Math.max(118, enemy.size * 2.8);
+        if (perpendicular > allowedMiss && cursorDist > allowedMiss * 1.45) continue;
+
+        const closeThreatBonus = enemy.type === "kamikaze" ? -Math.max(0, 220 - dist) * 0.24 : 0;
+        const score = perpendicular * 0.72 + cursorDist * 0.22 + Math.max(0, forward) * 0.035 + closeThreatBonus;
+
+        if (score < bestScore) {
+          bestScore = score;
+          best = enemy;
+        }
+      }
+
+      if (best) {
+        game.preciseAimLockId = getPreciseAimTargetId(best);
+        game.preciseAimLockStartedAt = game.time || 0;
+      }
+
+      return best;
+    }
+
+    function isPreciseFireHeld() {
+      return game.state === "playing" &&
+        !game.settingsOpen &&
+        !game.upgradeShopOpen &&
+        (
+          (game.weaponMode === "preciseShot" && mouse.down) ||
+          (game.rightAbility === "preciseShot" && mouse.rightDown)
+        );
+    }
+
     function updateStationaryFireHold(dt) {
       const firingCommonWeapon = game.weaponMode === "normal" && mouse.down;
       if (firingCommonWeapon && isStationaryComboActive()) {
@@ -5174,6 +5288,7 @@
       game.preciseShotCooldown = 0;
       game.rightAbility = "pulsador";
       game.preciseShotCooldown = 0;
+      clearPreciseAimLock();
       clearUpgradePickup();
       clearHealPickup();
       player.maxHp = 3;
@@ -5242,6 +5357,7 @@
       game.curadorCooldown = 0;
       game.rightAbility = "pulsador";
       game.preciseShotCooldown = 0;
+      clearPreciseAimLock();
       clearUpgradePickup();
       clearHealPickup();
       player.maxHp = 3;
@@ -7261,8 +7377,12 @@ if (player.stamina <= 0) return false;
 
       spendStamina(cost);
 
-      const angle = Math.atan2(mouse.y - player.y, mouse.x - player.x);
+      const target = acquirePreciseAimTarget();
       const speed = 680;
+      const aimPoint = target ? getPreciseAimPointForEnemy(target, player, speed) : null;
+      const angle = aimPoint
+        ? Math.atan2(aimPoint.y - player.y, aimPoint.x - player.x)
+        : Math.atan2(mouse.y - player.y, mouse.x - player.x);
       const spawnDist = 22;
 
       const shotX = player.x + Math.cos(angle) * spawnDist;
@@ -7270,7 +7390,7 @@ if (player.stamina <= 0) return false;
       const shotVx = Math.cos(angle) * speed;
       const shotVy = Math.sin(angle) * speed;
 
-      projectiles.push({
+      const projectile = {
         x: shotX,
         y: shotY,
         vx: shotVx,
@@ -7278,17 +7398,20 @@ if (player.stamina <= 0) return false;
         size: 11,
         damage: 1,
         precise: true,
-        homingStrength: 9.5,
-        lockDistance: 58,
+        homingStrength: target?.type === "kamikaze" ? 24 : 18,
+        lockDistance: target?.type === "kamikaze" ? 118 : 96,
+        preciseTargetId: target ? getPreciseAimTargetId(target) : "",
         speed,
         rotation: 0,
         rotateTimer: 0,
         life: 1.8,
-      });
+      };
+
+      projectiles.push(projectile);
 
       sendOnlineProjectileShotFromWorld(shotX, shotY, shotVx, shotVy, 11, 1, { weapon: "precise", precise: true });
 
-      return true;
+      return projectile;
     }
 
     function shootPreciseSingleShot(slot = "left") {
@@ -7305,6 +7428,12 @@ if (player.stamina <= 0) return false;
     }
 
     function findPreciseProjectileTarget(p) {
+      if (p.preciseTargetId) {
+        const locked = enemies.find(enemy => isPreciseAimTargetValid(enemy) && getPreciseAimTargetId(enemy) === p.preciseTargetId);
+        if (locked) return locked;
+        p.preciseTargetId = "";
+      }
+
       let best = null;
       let bestScore = Infinity;
       const speed = Math.hypot(p.vx, p.vy) || 1;
@@ -7316,10 +7445,10 @@ if (player.stamina <= 0) return false;
         const ey = enemy.y - p.y;
         const forward = ex * nx + ey * ny;
         if (forward < -12) continue;
-        if (forward > 260) continue;
+        if (forward > 420) continue;
 
         const perpendicular = Math.abs(ex * ny - ey * nx);
-        const allowedMiss = p.lockDistance + enemy.size * 0.55;
+        const allowedMiss = p.lockDistance + enemy.size * 0.85;
         if (perpendicular > allowedMiss) continue;
 
         const score = perpendicular + forward * 0.12;
@@ -7329,6 +7458,7 @@ if (player.stamina <= 0) return false;
         }
       }
 
+      if (best) p.preciseTargetId = getPreciseAimTargetId(best);
       return best;
     }
 
@@ -7337,7 +7467,8 @@ if (player.stamina <= 0) return false;
       const target = findPreciseProjectileTarget(p);
       if (!target) return;
 
-      const angle = Math.atan2(target.y - p.y, target.x - p.x);
+      const point = getPreciseAimPointForEnemy(target);
+      const angle = Math.atan2(point.y - p.y, point.x - p.x);
       const speed = p.speed || Math.hypot(p.vx, p.vy) || 680;
       const targetVx = Math.cos(angle) * speed;
       const targetVy = Math.sin(angle) * speed;
@@ -7399,7 +7530,12 @@ if (player.stamina <= 0) return false;
         game.shootTimer = 0;
         mouse.down = false;
         mouse.rightDown = false;
+        clearPreciseAimLock();
         return;
+      }
+
+      if (!isPreciseFireHeld()) {
+        clearPreciseAimLock();
       }
 
       if (game.rightAbility === "preciseShot" && mouse.rightDown && game.state === "playing") {
