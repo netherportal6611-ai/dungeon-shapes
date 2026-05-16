@@ -1142,7 +1142,7 @@
       clearInputs();
     }
 
-    const GAME_VERSION_LABEL = "alpha-10";
+    const GAME_VERSION_LABEL = "alpha-11";
     const WS_LOCAL_URL = "wss://jsab-multiplayer.netherportal6611.workers.dev/ws";
     const ONLINE_PLAYER_IDS = ["p1", "p2", "p3"];
     const ONLINE_REMOTE_PRIMARY_COLOR = "#00ff8c";
@@ -3152,6 +3152,11 @@
       if (msg.type === "room_error") {
         game.multiplayer.joinError = msg.message || "Error de sala.";
         game.multiplayer.status = "Error de WebSocket.";
+        if (onlineRoom.connectMode === "join") {
+          closeOnlineSocket(true);
+          setMenuMode("joinRoom");
+          setTimeout(() => roomCodeInput.focus(), 50);
+        }
         return;
       }
 
