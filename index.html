@@ -1099,6 +1099,11 @@
       return handleMenuClick(x, y);
     }
 
+    function shouldIgnoreGlobalMenuPointer(target) {
+      if (!target || !target.closest) return false;
+      return !!target.closest("#auth-screen, #auth-user-badge, #room-code-box, #settings-cheat-box");
+    }
+
     function isTypingInSettingsBox() {
       return document.activeElement === settingsCheatInput || document.activeElement === roomCodeInput;
     }
@@ -1152,7 +1157,7 @@
       clearInputs();
     }
 
-    const GAME_VERSION_LABEL = "alpha-14";
+    const GAME_VERSION_LABEL = "alpha-15";
     const WS_LOCAL_URL = "wss://jsab-multiplayer.netherportal6611.workers.dev/ws";
     const ONLINE_PLAYER_IDS = ["p1", "p2", "p3"];
     const ONLINE_REMOTE_PRIMARY_COLOR = "#00ff8c";
@@ -3418,7 +3423,7 @@
       }
 
       if (game.state === "menu") {
-        if (e.button === 0) activateMenuAtClientPoint(e.clientX, e.clientY);
+        // El menú se activa en pointerup global para que PC y móvil usen el mismo camino.
         return;
       }
 
@@ -3463,11 +3468,20 @@
 
     canvas.addEventListener("pointerup", e => {
       if (game.state !== "menu") return;
-      if (e.pointerType === "mouse") return;
       e.preventDefault();
       canvas.focus();
       activateMenuAtClientPoint(e.clientX, e.clientY);
     });
+
+    window.addEventListener("pointerup", e => {
+      if (game.state !== "menu") return;
+      if (shouldIgnoreGlobalMenuPointer(e.target)) return;
+      if (activateMenuAtClientPoint(e.clientX, e.clientY)) {
+        e.preventDefault();
+        e.stopPropagation();
+        canvas.focus();
+      }
+    }, true);
 
     window.addEventListener("mouseup", e => {
       updateMouseButtons(e);
