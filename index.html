@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Roguelike Room Base</title>
   <style>
     * {
@@ -19,6 +19,24 @@
       font-family: Inter, "Segoe UI", Arial, sans-serif;
       color: white;
       letter-spacing: 0.01em;
+    }
+
+    body.ios-fullscreen-fallback {
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100dvh;
+      min-height: -webkit-fill-available;
+      overflow: hidden;
+      overscroll-behavior: none;
+      background: #050509;
+    }
+
+    body.ios-fullscreen-fallback canvas,
+    body.ios-fullscreen-fallback #mobile-controls {
+      width: 100vw;
+      height: 100dvh;
+      min-height: -webkit-fill-available;
     }
 
     canvas {
@@ -856,18 +874,44 @@
       mouse.y = player.y + ay * 220;
     }
 
+    function isIOSFullscreenFallbackActive() {
+      return document.body.classList.contains("ios-fullscreen-fallback");
+    }
+
+    function shouldUseIOSFullscreenFallback() {
+      const ua = navigator.userAgent || "";
+      const isiOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+      return isiOS && !document.fullscreenEnabled && !document.webkitFullscreenEnabled;
+    }
+
+    function setIOSFullscreenFallback(active) {
+      document.body.classList.toggle("ios-fullscreen-fallback", !!active);
+      window.scrollTo(0, 0);
+      setTimeout(() => {
+        resizeCanvasToDisplay();
+        invalidateLayoutCache();
+        refreshMobileControlsVisibility();
+      }, 60);
+    }
+
     async function toggleFullscreenMode() {
       try {
         const root = document.documentElement;
+        if (shouldUseIOSFullscreenFallback()) {
+          setIOSFullscreenFallback(!isIOSFullscreenFallbackActive());
+          return;
+        }
         if (!document.fullscreenElement) {
           if (root.requestFullscreen) await root.requestFullscreen();
           else if (root.webkitRequestFullscreen) root.webkitRequestFullscreen();
+          else setIOSFullscreenFallback(!isIOSFullscreenFallbackActive());
         } else {
           if (document.exitFullscreen) await document.exitFullscreen();
           else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
         }
       } catch (_) {
         // Algunos previews/browsers bloquean fullscreen. No rompe el juego.
+        setIOSFullscreenFallback(!isIOSFullscreenFallbackActive());
       }
 
       setTimeout(() => {
@@ -1042,6 +1086,7 @@
     });
 
     bindTouchButton(touchDashButton, () => {
+      if (player.downed || game.state !== "playing" || game.settingsOpen || game.upgradeShopOpen) return;
       updateMobileAimTarget();
       startDash();
     }, () => {});
@@ -1142,12 +1187,12 @@
       clearInputs();
     }
 
-    const GAME_VERSION_LABEL = "alpha-13";
+    const GAME_VERSION_LABEL = "alpha-14";
     const WS_LOCAL_URL = "wss://jsab-multiplayer.netherportal6611.workers.dev/ws";
     const ONLINE_PLAYER_IDS = ["p1", "p2", "p3"];
     const ONLINE_REMOTE_PRIMARY_COLOR = "#00ff8c";
     const ONLINE_REMOTE_SECONDARY_COLOR = "#f6ff75";
-    const ONLINE_RECONNECT_MAX_ATTEMPTS = 5;
+    const ONLINE_RECONNECT_MAX_ATTEMPTS = 8;
 
     const onlineRoom = {
       socket: null,
@@ -2109,7 +2154,7 @@
       if (!onlineRoom.socket || onlineRoom.socket.readyState !== WebSocket.OPEN) return;
       onlineHeartbeatTimer -= dt;
       if (onlineHeartbeatTimer > 0) return;
-      onlineHeartbeatTimer = 12;
+      onlineHeartbeatTimer = 5;
 
       try {
         onlineRoom.socket.send(JSON.stringify({ type: "ping", at: Date.now() }));
@@ -3131,7 +3176,7 @@
       onlineRoom.reconnecting = true;
       game.multiplayer.status = `Reconectando... ${onlineReconnectAttempts}/${ONLINE_RECONNECT_MAX_ATTEMPTS}`;
 
-      const delay = Math.min(4200, 650 + onlineReconnectAttempts * 450);
+      const delay = Math.min(5200, 450 + onlineReconnectAttempts * 420);
       onlineReconnectTimer = setTimeout(() => {
         onlineReconnectTimer = null;
         connectOnlineRoom(roomCode, playerName, mode, true);
@@ -3183,7 +3228,8 @@
       game.multiplayer.status = reconnecting ? "Reconectando WebSocket..." : "Conectando WebSocket...";
       game.multiplayer.joinError = "";
 
-      const url = `${WS_LOCAL_URL}?room=${encodeURIComponent(cleanCode)}&name=${encodeURIComponent(cleanName)}`;
+      const resumeId = reconnecting && previousPlayerId ? previousPlayerId : "";
+      const url = `${WS_LOCAL_URL}?room=${encodeURIComponent(cleanCode)}&name=${encodeURIComponent(cleanName)}${resumeId ? `&resume=${encodeURIComponent(resumeId)}` : ""}`;
       const socket = new WebSocket(url);
       onlineRoom.socket = socket;
 
@@ -4875,6 +4921,7 @@
     function startDash() {
       if (game.state !== "playing" || game.settingsOpen || game.upgradeShopOpen) return;
       if (game.waveState !== "combat" && game.waveState !== "intermission") return;
+      if (player.downed) return;
       if (player.dashTimer > 0) return;
       const dashCost = 0.75 * (hasRogueUpgrade("dashAcotado") ? 0.75 : 1);
       if (player.stamina < dashCost) return;
