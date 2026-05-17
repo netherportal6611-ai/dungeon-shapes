@@ -1268,7 +1268,7 @@
       clearInputs();
     }
 
-    const GAME_VERSION_LABEL = "alpha-18";
+    const GAME_VERSION_LABEL = "alpha-19";
     const WS_LOCAL_URL = "wss://jsab-multiplayer.netherportal6611.workers.dev/ws";
     const ONLINE_PLAYER_IDS = ["p1", "p2", "p3"];
     const ONLINE_VERSUS_PLAYER_IDS = ["p1", "p2", "p3"];
@@ -1280,7 +1280,7 @@
       return {
         primaryWeapon: "multiShot",
         rightAbility: "pulsador",
-        lives: 3,
+        lives: 10,
         targetScore: 3,
       };
     }
@@ -1290,8 +1290,7 @@
       const defaults = getDefaultOnlineVersusSettings();
       const primaryWeapon = String(input.primaryWeapon || defaults.primaryWeapon) === "normal" ? "normal" : "multiShot";
       const rightAbility = String(input.rightAbility || defaults.rightAbility) === "curador" ? "curador" : "pulsador";
-      const requestedLives = Math.floor(Number(input.lives) || defaults.lives);
-      const lives = [3, 5, 7].includes(requestedLives) ? requestedLives : defaults.lives;
+      const lives = 10;
       const targetScore = clamp(Math.floor(Number(input.targetScore) || defaults.targetScore), 1, 100);
       return { primaryWeapon, rightAbility, lives, targetScore };
     }
@@ -2096,7 +2095,7 @@
 
     function remoteOnlineProjectileHitsLocalPlayer(p) {
       if (!isOnlineVersusMode() || player.downed || game.versus.pendingRoundLost) return false;
-      if (isPlayerDamageInvulnerable()) return false;
+      if (player.dashTimer > 0 || player.dashGraceTimer > 0) return false;
 
       const projectileRadius = getPlayerProjectileHitHalfSize(p);
       const dx = p.x - player.x;
@@ -5858,7 +5857,12 @@
 
     function damagePlayer(amount = 1) {
       if (game.immortalMode) return;
-      if (isPlayerDamageInvulnerable() || player.hitTimer > 0) return;
+      const versusDamage = isOnlineVersusMode();
+      if (versusDamage) {
+        if (player.dashTimer > 0 || player.dashGraceTimer > 0) return;
+      } else if (isPlayerDamageInvulnerable() || player.hitTimer > 0) {
+        return;
+      }
 
       amount = Math.max(1, Math.min(amount, player.hp));
       spawnFloatingText(`-${amount}`, player.x, player.y - 32, game.ruby, 17);
@@ -5869,8 +5873,13 @@
       }
 
       player.hp -= amount;
-      player.hitTimer = 1;
-      player.invincible = true;
+      if (versusDamage) {
+        player.hitTimer = 0.12;
+        player.invincible = false;
+      } else {
+        player.hitTimer = 1;
+        player.invincible = true;
+      }
       triggerScreenShake(6 + amount * 2.2, 0.14 + amount * 0.04);
 
       if (player.hp <= 0) {
@@ -5895,7 +5904,7 @@
             startGameOver();
           }
         }
-      } else {
+      } else if (!versusDamage) {
         setTimeout(() => {
           if (player.dashTimer <= 0 && player.dashGraceTimer <= 0 && game.state === "playing") {
             player.invincible = false;
@@ -7958,19 +7967,24 @@
               }
             }
           }
-        } else if (!ring.hitPlayer && !isPlayerDamageInvulnerable()) {
-          const dx = player.x - ring.x;
-          const dy = player.y - ring.y;
-          const dist = Math.hypot(dx, dy);
-          const band = getRingHitHalfThickness(ring) + getPlayerHitRadius();
+        } else {
+          const canTakeRingHit = isOnlineVersusMode()
+            ? (player.dashTimer <= 0 && player.dashGraceTimer <= 0)
+            : !isPlayerDamageInvulnerable();
+          if (!ring.hitPlayer && canTakeRingHit) {
+            const dx = player.x - ring.x;
+            const dy = player.y - ring.y;
+            const dist = Math.hypot(dx, dy);
+            const band = getRingHitHalfThickness(ring) + getPlayerHitRadius();
 
-          if (Math.abs(dist - ring.radius) <= band) {
-            if (player.dashTimer > 0 || player.wasDashing) {
-              ring.hitPlayer = true;
-            } else {
-              ring.hitPlayer = true;
-              if (isOnlineVersusMode() && ring.owner) game.versus.lastDamageOwner = ring.owner;
-              damagePlayer(ring.damagePlayerAmount || 1);
+            if (Math.abs(dist - ring.radius) <= band) {
+              if (player.dashTimer > 0 || player.wasDashing) {
+                ring.hitPlayer = true;
+              } else {
+                ring.hitPlayer = true;
+                if (isOnlineVersusMode() && ring.owner) game.versus.lastDamageOwner = ring.owner;
+                damagePlayer(ring.damagePlayerAmount || 1);
+              }
             }
           }
         }
@@ -9936,8 +9950,9 @@ if (player.stamina <= 0) return false;
         const livesStartX = 52;
         const livesSpacing = 70;
         const lifeRadius = 23;
+        const vitalsHpSlots = isOnlineVersusMode() ? 3 : player.maxHp;
         x = livesStartX - lifeRadius - 7;
-        totalW = livesSpacing * (player.maxHp - 1) + (lifeRadius + 7) * 2;
+        totalW = livesSpacing * (vitalsHpSlots - 1) + (lifeRadius + 7) * 2;
         outerH = 24;
         innerH = 12;
         y = canvas.height - 38;
@@ -11385,7 +11400,13 @@ if (player.stamina <= 0) return false;
       const w = Math.min(p.w - 54, portrait ? 340 : compact ? 390 : 460);
       const h = portrait ? 46 : compact ? 42 : 54;
       const gap = portrait ? 10 : 14;
-      const x = p.x + p.w / 2 - w / 2;
+      let contentLeft = p.x + (compact ? 28 : portrait ? 24 : 90);
+      let contentRight = p.x + p.w - (compact ? 28 : portrait ? 24 : 90);
+      if (game.menuMode === "roomLobby" && game.multiplayer.roomMode === "versus" && !portrait) {
+        const settingsPanel = getVersusSettingsPanelRect(p);
+        contentLeft = settingsPanel.x + settingsPanel.w + (compact ? 18 : 26);
+      }
+      const x = (contentLeft + contentRight) / 2 - w / 2;
       const y = p.y + p.h - h * 2 - gap - (portrait ? 30 : compact ? 24 : 46);
       return { start: { x, y, w, h }, cancel: { x, y: y + h + gap, w, h } };
     }
@@ -11724,11 +11745,10 @@ if (player.stamina <= 0) return false;
     function getVersusSettingsPanelRect(roomPanel = getMenuRoomPanelRect()) {
       const compact = isCompactLandscapeMenuLayout();
       const portrait = isPortraitMenuLayout();
-      const w = portrait ? Math.min(roomPanel.w - 28, 286) : (compact ? 236 : 286);
-      const h = portrait ? 318 : (compact ? 318 : 390);
-      const sideX = roomPanel.x - w - (compact ? 12 : 22);
-      const x = sideX >= 14 ? sideX : Math.max(14, roomPanel.x + 14);
-      const y = portrait ? Math.max(12, roomPanel.y + roomPanel.h - h - 18) : roomPanel.y + (compact ? 16 : 22);
+      const w = portrait ? Math.min(roomPanel.w - 32, 360) : Math.min(compact ? 240 : 270, roomPanel.w * 0.34);
+      const h = portrait ? 250 : Math.min(roomPanel.h - 44, compact ? 278 : 300);
+      const x = portrait ? roomPanel.x + roomPanel.w / 2 - w / 2 : roomPanel.x + (compact ? 18 : 24);
+      const y = portrait ? roomPanel.y + roomPanel.h - h - 18 : roomPanel.y + (compact ? 18 : 26);
       return { x, y, w, h };
     }
 
@@ -11739,20 +11759,17 @@ if (player.stamina <= 0) return false;
       const gap = 8;
       const fullW = p.w - pad * 2;
       const halfW = (fullW - gap) / 2;
-      const thirdW = (fullW - gap * 2) / 3;
-      const y0 = p.y + 64;
+      const y0 = p.y + 54;
       return {
         panel: p,
         weaponMulti: { x: p.x + pad, y: y0, w: halfW, h: rowH },
         weaponNormal: { x: p.x + pad + halfW + gap, y: y0, w: halfW, h: rowH },
-        abilityPulse: { x: p.x + pad, y: y0 + 66, w: halfW, h: rowH },
-        abilityHeal: { x: p.x + pad + halfW + gap, y: y0 + 66, w: halfW, h: rowH },
-        lives3: { x: p.x + pad, y: y0 + 132, w: thirdW, h: rowH },
-        lives5: { x: p.x + pad + thirdW + gap, y: y0 + 132, w: thirdW, h: rowH },
-        lives7: { x: p.x + pad + (thirdW + gap) * 2, y: y0 + 132, w: thirdW, h: rowH },
-        pointsInput: { x: p.x + pad, y: y0 + 204, w: fullW - 78, h: rowH },
-        pointsMinus: { x: p.x + p.w - pad - 70, y: y0 + 204, w: 30, h: rowH },
-        pointsPlus: { x: p.x + p.w - pad - 34, y: y0 + 204, w: 34, h: rowH },
+        abilityPulse: { x: p.x + pad, y: y0 + 56, w: halfW, h: rowH },
+        abilityHeal: { x: p.x + pad + halfW + gap, y: y0 + 56, w: halfW, h: rowH },
+        hpInfo: { x: p.x + pad, y: y0 + 112, w: fullW, h: rowH },
+        pointsInput: { x: p.x + pad, y: y0 + 168, w: fullW - 78, h: rowH },
+        pointsMinus: { x: p.x + p.w - pad - 70, y: y0 + 168, w: 30, h: rowH },
+        pointsPlus: { x: p.x + p.w - pad - 34, y: y0 + 168, w: 34, h: rowH },
       };
     }
 
@@ -11803,10 +11820,8 @@ if (player.stamina <= 0) return false;
       drawVersusOptionButton(rects.abilityHeal, "CURADOR", settings.rightAbility === "curador", hostCanEdit);
 
       ctx.fillStyle = "rgba(255,255,255,0.62)";
-      ctx.fillText("VIDAS", p.x + 16, rects.lives3.y - 18);
-      drawVersusOptionButton(rects.lives3, "3", settings.lives === 3, hostCanEdit);
-      drawVersusOptionButton(rects.lives5, "5", settings.lives === 5, hostCanEdit);
-      drawVersusOptionButton(rects.lives7, "7", settings.lives === 7, hostCanEdit);
+      ctx.fillText("SALUD", p.x + 16, rects.hpInfo.y - 18);
+      drawVersusOptionButton(rects.hpInfo, "10 HP - SIN COOLDOWN", true, false);
 
       ctx.fillStyle = "rgba(255,255,255,0.62)";
       ctx.fillText("PUNTOS PARA GANAR", p.x + 16, rects.pointsInput.y - 18);
@@ -11831,9 +11846,6 @@ if (player.stamina <= 0) return false;
       else if (pointInRect(x, y, rects.weaponNormal)) { settings.primaryWeapon = "normal"; changed = true; }
       else if (pointInRect(x, y, rects.abilityPulse)) { settings.rightAbility = "pulsador"; changed = true; }
       else if (pointInRect(x, y, rects.abilityHeal)) { settings.rightAbility = "curador"; changed = true; }
-      else if (pointInRect(x, y, rects.lives3)) { settings.lives = 3; changed = true; }
-      else if (pointInRect(x, y, rects.lives5)) { settings.lives = 5; changed = true; }
-      else if (pointInRect(x, y, rects.lives7)) { settings.lives = 7; changed = true; }
       else if (pointInRect(x, y, rects.pointsMinus)) { settings.targetScore = Math.max(1, settings.targetScore - 1); changed = true; }
       else if (pointInRect(x, y, rects.pointsPlus)) { settings.targetScore = Math.min(100, settings.targetScore + 1); changed = true; }
 
@@ -11866,10 +11878,14 @@ if (player.stamina <= 0) return false;
       ctx.restore();
       drawVersusSettingsPanel(panel);
       const b = getRoomLobbyButtonRects();
-      const cardW = Math.max(240, Math.min(560, panel.w - (compact ? 58 : portrait ? 48 : 180)));
-      const cardX = cx - cardW / 2;
+      const settingsPanel = mp.roomMode === "versus" ? getVersusSettingsPanelRect(panel) : null;
+      const contentLeft = settingsPanel && !portrait ? settingsPanel.x + settingsPanel.w + (compact ? 18 : 26) : panel.x + (compact ? 28 : portrait ? 24 : 90);
+      const contentRight = panel.x + panel.w - (compact ? 28 : portrait ? 24 : 90);
+      const contentCx = (contentLeft + contentRight) / 2;
+      const cardW = Math.max(240, Math.min(560, contentRight - contentLeft));
+      const cardX = contentCx - cardW / 2;
       const slotGap = compact ? 7 : portrait ? 10 : 14;
-      const slotY = panel.y + (compact ? 160 : portrait ? 214 : 224);
+      const slotY = panel.y + (compact ? 160 : portrait ? 190 : 224);
       const available = Math.max(126, b.start.y - slotY - 12);
       const slotIds = mp.roomMode === "versus" ? ONLINE_VERSUS_PLAYER_IDS : ONLINE_PLAYER_IDS;
       const slotH = Math.max(38, Math.min(compact ? 48 : portrait ? 56 : 62, (available - slotGap * Math.max(0, slotIds.length - 1)) / slotIds.length));
@@ -12391,7 +12407,9 @@ if (player.stamina <= 0) return false;
       const x = mobileInput.enabled ? 12 : 24;
       const y = mobileInput.enabled ? 10 : 22;
       const w = mobileInput.enabled ? Math.min(canvas.width - 88, 340) : 300;
-      const h = lock > 0 ? 134 : 114;
+      const h = lock > 0 ? 154 : 134;
+      const hpMax = Math.max(1, Number(settings.lives) || 10);
+      const hpNow = clamp(player.hp, 0, hpMax);
 
       ctx.save();
       ctx.textAlign = "left";
@@ -12413,11 +12431,18 @@ if (player.stamina <= 0) return false;
       ctx.fillText(getOnlineVersusScoreText() || "MARCADOR 0", x + 32, y + 42);
       ctx.font = "800 11px Inter, Montserrat, Arial, sans-serif";
       ctx.fillStyle = "rgba(255,255,255,0.66)";
-      ctx.fillText(`OBJETIVO: ${settings.targetScore}  VIDAS: ${settings.lives}`, x + 32, y + 64);
-      ctx.fillText(`${settings.primaryWeapon === "multiShot" ? "TIRO MULTIPLE" : "ARMA NORMAL"} / ${settings.rightAbility === "pulsador" ? "PULSO" : "CURADOR"}`, x + 32, y + 84);
+      ctx.fillText(`OBJETIVO: ${settings.targetScore}  HP: ${hpNow}/${hpMax}`, x + 32, y + 64);
+      drawRoundedRect(x + 32, y + 84, w - 64, 9, 4.5);
+      ctx.fillStyle = "rgba(255,255,255,0.12)";
+      ctx.fill();
+      drawRoundedRect(x + 32, y + 84, (w - 64) * (hpNow / hpMax), 9, 4.5);
+      ctx.fillStyle = hpNow <= 3 ? game.ruby : ONLINE_REMOTE_SECONDARY_COLOR;
+      ctx.fill();
+      ctx.fillStyle = "rgba(255,255,255,0.66)";
+      ctx.fillText(`${settings.primaryWeapon === "multiShot" ? "TIRO MULTIPLE" : "ARMA NORMAL"} / ${settings.rightAbility === "pulsador" ? "PULSO" : "CURADOR"}`, x + 32, y + 104);
       if (lock > 0) {
         ctx.fillStyle = game.ruby;
-        ctx.fillText(`PULSADOR: SIN DISPARO ${lock}s`, x + 32, y + 104);
+        ctx.fillText(`PULSADOR: SIN DISPARO ${lock}s`, x + 32, y + 124);
       }
       ctx.restore();
 
@@ -13053,8 +13078,10 @@ if (player.stamina <= 0) return false;
       drawWaveBanner();
       drawWaveFlash();
       drawStaminaBar();
-      if (!isOnlineVersusMode()) drawXPBar();
-      drawLives();
+      if (!isOnlineVersusMode()) {
+        drawXPBar();
+        drawLives();
+      }
       drawFearOverlay();
       ctx.restore();
 
