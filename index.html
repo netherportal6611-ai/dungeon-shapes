@@ -3,6 +3,11 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#050509" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="Dungeon Shapes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>Roguelike Room Base</title>
   <style>
     * {
@@ -135,6 +140,12 @@
 
     body.game-over-screen #mobile-controls,
     body.game-over-screen #settings-cheat-box {
+      display: none !important;
+    }
+
+    body.versus-mode #touch-skip-wave,
+    body.versus-mode #touch-special1,
+    body.versus-mode #touch-revive {
       display: none !important;
     }
 
@@ -788,6 +799,7 @@
       document.body.classList.toggle("settings-panel-open", ready && !!g.settingsOpen);
       document.body.classList.toggle("menu-active", ready && g.state === "menu");
       document.body.classList.toggle("gameplay-active", ready && g.state !== "menu");
+      document.body.classList.toggle("versus-mode", mobileReady && g.multiplayer?.roomMode === "versus" && g.state !== "menu");
       document.body.classList.toggle("game-over-screen", ready && (g.state === "gameOver" || g.state === "fadeOut"));
     }
 
@@ -1068,7 +1080,7 @@
       if (game.state === "menu") return;
       if (isOnlineMatchActive()) {
         if (game.state === "playing") {
-          if (isOnlineHost()) requestOnlineGameOver("restart");
+          if (isOnlineHost() && !isOnlineVersusMode()) requestOnlineGameOver("restart");
         } else if (game.state === "gameOver" || game.state === "fadeOut") {
           requestOnlineGameOverSkip();
         }
@@ -1109,6 +1121,7 @@
     }, () => {});
 
     bindTouchButton(touchReviveButton, () => {
+      if (isOnlineVersusMode()) return;
       if (game.reviveCooldown > 0) return;
       mobileInput.revive = true;
     }, () => {
@@ -1217,9 +1230,10 @@
       clearInputs();
     }
 
-    const GAME_VERSION_LABEL = "alpha-15";
+    const GAME_VERSION_LABEL = "alpha-17";
     const WS_LOCAL_URL = "wss://jsab-multiplayer.netherportal6611.workers.dev/ws";
     const ONLINE_PLAYER_IDS = ["p1", "p2", "p3"];
+    const ONLINE_VERSUS_PLAYER_IDS = ["p1", "p2"];
     const ONLINE_REMOTE_PRIMARY_COLOR = "#00ff8c";
     const ONLINE_REMOTE_SECONDARY_COLOR = "#f6ff75";
     const ONLINE_RECONNECT_MAX_ATTEMPTS = 8;
@@ -1231,6 +1245,13 @@
       reconnecting: false,
       playerId: "",
       players: {},
+      roomMode: "normal",
+      versus: {
+        score: { p1: 0, p2: 0 },
+        round: 0,
+        targetScore: 3,
+        matchOver: false,
+      },
     };
 
     let onlineSendTimer = 0;
@@ -1346,10 +1367,51 @@
       return `Espacio para saltar (${count}/${required})`;
     }
 
+    function normalizeOnlineRoomMode(mode) {
+      return String(mode || "").trim().toLowerCase() === "versus" ? "versus" : "normal";
+    }
+
+    function getOnlineRoomPlayerIds() {
+      return normalizeOnlineRoomMode(onlineRoom.roomMode || game.multiplayer?.roomMode) === "versus"
+        ? ONLINE_VERSUS_PLAYER_IDS
+        : ONLINE_PLAYER_IDS;
+    }
+
+    function isOnlineVersusMode() {
+      return isOnlineSessionActive() && normalizeOnlineRoomMode(onlineRoom.roomMode || game.multiplayer?.roomMode) === "versus";
+    }
+
+    function applyOnlineRoomMode(roomMode) {
+      const mode = normalizeOnlineRoomMode(roomMode);
+      onlineRoom.roomMode = mode;
+      if (game.multiplayer) game.multiplayer.roomMode = mode;
+      syncMobileControlsState();
+      return mode;
+    }
+
+    function applyOnlineVersusState(versus = {}) {
+      const score = versus.score || {};
+      onlineRoom.versus = {
+        score: {
+          p1: Math.max(0, Number(score.p1) || 0),
+          p2: Math.max(0, Number(score.p2) || 0),
+        },
+        round: Math.max(0, Math.floor(Number(versus.round) || 0)),
+        targetScore: Math.max(1, Math.floor(Number(versus.targetScore) || 3)),
+        matchOver: !!versus.matchOver,
+      };
+      if (game.versus) {
+        game.versus.score = { ...onlineRoom.versus.score };
+        game.versus.round = onlineRoom.versus.round;
+        game.versus.targetScore = onlineRoom.versus.targetScore;
+        game.versus.matchOver = onlineRoom.versus.matchOver;
+      }
+    }
+
     function getOnlineConnectedPlayerIds() {
       const ids = [];
       const players = onlineRoom.players || {};
-      for (const id of ONLINE_PLAYER_IDS) {
+      for (const id of getOnlineRoomPlayerIds()) {
         if (players[id]?.connected || onlineRoom.playerId === id) ids.push(id);
       }
       return ids.length ? ids : (onlineRoom.playerId ? [onlineRoom.playerId] : []);
@@ -1559,6 +1621,215 @@
       });
     }
 
+    function getOnlineVersusOpponentId(id = onlineRoom.playerId) {
+      return id === "p1" ? "p2" : "p1";
+    }
+
+    function setOnlineVersusSpawnPosition() {
+      const rr = room.getRect();
+      const leftSide = onlineRoom.playerId !== "p2";
+      player.x = rr.x + rr.w * (leftSide ? 0.25 : 0.75);
+      player.y = rr.y + rr.h * 0.5;
+      mouse.x = rr.x + rr.w * (leftSide ? 0.75 : 0.25);
+      mouse.y = player.y;
+    }
+
+    function clearOnlineVersusCombatObjects() {
+      enemies.length = 0;
+      hazards.length = 0;
+      bossHazards.length = 0;
+      pulserRings.length = 0;
+      projectiles.length = 0;
+      onlineRemoteProjectiles.length = 0;
+      impactParticles.length = 0;
+      enemyDeathPulses.length = 0;
+      dashBursts.length = 0;
+    }
+
+    function setupOnlineVersusRun(showBanner = true) {
+      applyOnlineRoomMode("versus");
+      game.wave = 0;
+      game.waveState = "combat";
+      game.waveTimer = 0;
+      game.intermissionTimer = 0;
+      game.roomStartTimer = 0.8;
+      game.points = 0;
+      game.pointsVisual = 0;
+      game.xp = 0;
+      game.xpVisual = 0;
+      game.xpBackVisual = 0;
+      game.xpChoiceOpen = false;
+      game.xpChoices = [];
+      game.upgradePickup = null;
+      game.upgradeShopOpen = false;
+      game.hasCurador = false;
+      game.curadorCooldown = 0;
+      game.weaponMode = "multiShot";
+      game.multiShotCooldown = 0;
+      game.hasPulsador = true;
+      game.pulsadorCooldown = 0;
+      game.rightAbility = "pulsador";
+      game.preciseShotCooldown = 0;
+      game.versus.pendingRoundLost = false;
+      game.versus.shootLockTimer = 0;
+      game.versus.matchOver = false;
+      game.versus.returningToMenu = false;
+      resetOnlineIntermissionSkipVotes(0);
+      resetOnlineGameOverSkipVotes(false);
+      clearPreciseAimLock();
+      clearUpgradePickup();
+      clearHealPickup();
+      clearOnlineVersusCombatObjects();
+      player.maxHp = 3;
+      player.hp = 3;
+      resetPlayer();
+      setOnlineVersusSpawnPosition();
+      player.invincible = true;
+      player.hitTimer = 0.8;
+      mobileInput.revive = false;
+      if (showBanner) showWaveBanner("VERSUS", "primero a 3 puntos");
+      triggerRoomPulse("#42dfff", 0.42);
+      sendOnlinePlayerStateNow();
+      syncMobileControlsState();
+    }
+
+    function sendOnlineVersusPulse(x, y) {
+      if (!isOnlineVersusMode()) return false;
+      if (!onlineRoom.socket || onlineRoom.socket.readyState !== WebSocket.OPEN) return false;
+      const pos = normalizeRoomPoint(x, y);
+      try {
+        onlineRoom.socket.send(JSON.stringify({
+          type: "versus_pulse",
+          id: `${onlineRoom.playerId}-pulse-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
+          x: pos.x,
+          y: pos.y,
+          damage: 1,
+        }));
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    function spawnRemoteVersusPulse(pulse) {
+      if (!pulse || pulse.owner === onlineRoom.playerId) return;
+      if (!isOnlineVersusMode() || game.state !== "playing") return;
+
+      const pos = denormalizeRoomPoint(pulse.x, pulse.y);
+      const rr = room.getRect();
+      const maxRadius = Math.hypot(rr.w, rr.h);
+      const speed = player.speed * 0.7 * 0.75;
+
+      pulserRings.push({
+        x: pos.x,
+        y: pos.y,
+        radius: 8,
+        speed,
+        thickness: 16,
+        maxRadius,
+        minRadius: 8,
+        color: getOnlineRemoteColor(pulse.owner || ""),
+        alpha: 0.42,
+        hitPlayer: false,
+        damagePlayerAmount: Math.max(1, Number(pulse.damage) || 1),
+        life: maxRadius / speed,
+      });
+    }
+
+    function requestOnlineVersusRoundLost() {
+      if (!isOnlineVersusMode()) return false;
+      if (game.versus.pendingRoundLost || game.versus.matchOver) return true;
+
+      game.versus.pendingRoundLost = true;
+      player.hp = 0;
+      player.downed = true;
+      player.invincible = true;
+      player.hitTimer = 0;
+      player.dashTimer = 0;
+      player.dashGraceTimer = 0;
+      player.wasDashing = false;
+      mouse.down = false;
+      mouse.rightDown = false;
+      mobileInput.leftFire = false;
+      mobileInput.rightFire = false;
+      spawnFloatingText("KO", player.x, player.y - 42, game.ruby, 20);
+      triggerScreenShake(6, 0.16);
+      triggerRoomPulse(game.ruby, 0.38);
+      sendOnlinePlayerStateNow();
+
+      if (!onlineRoom.socket || onlineRoom.socket.readyState !== WebSocket.OPEN) return false;
+      try {
+        onlineRoom.socket.send(JSON.stringify({
+          type: "versus_round_lost",
+          round: game.versus.round,
+        }));
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    function handleOnlineVersusRoundOver(msg) {
+      if (!isOnlineVersusMode()) return;
+      applyOnlineVersusState({
+        score: msg.score || onlineRoom.versus.score,
+        round: msg.round,
+        targetScore: msg.targetScore,
+        matchOver: !!msg.matchOver,
+      });
+      if (msg.players) onlineRoom.players = msg.players;
+
+      const winnerName = msg.winnerId === onlineRoom.playerId ? "PUNTO PARA VOS" : "PUNTO RIVAL";
+      game.versus.roundBannerText = winnerName;
+      game.versus.roundBannerSubText = `${game.versus.score.p1} - ${game.versus.score.p2}`;
+      game.versus.roundBannerTimer = 1.2;
+      clearOnlineVersusCombatObjects();
+
+      if (msg.matchOver) {
+        handleOnlineVersusMatchOver(msg);
+        return;
+      }
+
+      setupOnlineVersusRun(false);
+      sendOnlinePlayerStateNow();
+    }
+
+    function handleOnlineVersusMatchOver(msg) {
+      if (!isOnlineVersusMode()) return;
+      if (game.versus.returningToMenu) return;
+      applyOnlineVersusState({
+        score: msg.score || onlineRoom.versus.score,
+        targetScore: msg.targetScore,
+        matchOver: true,
+      });
+      const won = msg.winnerId === onlineRoom.playerId;
+      game.versus.matchOver = true;
+      game.versus.returningToMenu = true;
+      game.versus.roundBannerText = won ? "GANASTE" : "PERDISTE";
+      game.versus.roundBannerSubText = `${game.versus.score.p1} - ${game.versus.score.p2}`;
+      game.versus.roundBannerTimer = 1.6;
+      clearOnlineVersusCombatObjects();
+      mouse.down = false;
+      mouse.rightDown = false;
+      mobileInput.leftFire = false;
+      mobileInput.rightFire = false;
+
+      setTimeout(() => {
+        if (!game.versus.matchOver) return;
+        closeOnlineSocket(true);
+        game.state = "menu";
+        game.menuMode = "multiplayer";
+        game.multiplayer.isHost = false;
+        game.multiplayer.roomCode = "";
+        game.multiplayer.remotePlayerName = "";
+        game.multiplayer.status = "Partida versus terminada.";
+        applyOnlineRoomMode("normal");
+        clearInputs();
+        syncRoomCodeBox();
+        syncMobileControlsState();
+      }, 1500);
+    }
+
 
     function remoteProjectileOutOfRoom(p, margin = 36) {
       const rr = room.getRect();
@@ -1682,6 +1953,7 @@
     }
 
     function remoteOnlineProjectileHitsEnemyVisual(p) {
+      if (isOnlineVersusMode()) return false;
       const projectileRadius = getPlayerProjectileHitHalfSize(p);
 
       for (let i = enemies.length - 1; i >= 0; i--) {
@@ -1703,6 +1975,20 @@
       return false;
     }
 
+    function remoteOnlineProjectileHitsLocalPlayer(p) {
+      if (!isOnlineVersusMode() || player.downed || game.versus.pendingRoundLost) return false;
+      if (isPlayerDamageInvulnerable()) return false;
+
+      const projectileRadius = getPlayerProjectileHitHalfSize(p);
+      const dx = p.x - player.x;
+      const dy = p.y - player.y;
+      const hit = dx * dx + dy * dy <= Math.pow(projectileRadius + getPlayerHitRadius(), 2);
+      if (!hit) return false;
+
+      damagePlayer(Math.max(1, Math.round(Number(p.damage) || 1)));
+      return true;
+    }
+
     function updateRemoteOnlineProjectiles(dt) {
       for (let i = onlineRemoteProjectiles.length - 1; i >= 0; i--) {
         const p = onlineRemoteProjectiles[i];
@@ -1720,9 +2006,10 @@
         const hitWall = projectileHitsWall(p);
         const hitObstacle = projectileHitsObstacle(p);
         const hitEnemy = remoteOnlineProjectileHitsEnemyVisual(p);
+        const hitPlayer = remoteOnlineProjectileHitsLocalPlayer(p);
         const farOutside = remoteProjectileOutOfRoom(p, 48);
 
-        if (p.life <= 0 || hitWall || hitObstacle || hitEnemy || farOutside) {
+        if (p.life <= 0 || hitWall || hitObstacle || hitEnemy || hitPlayer || farOutside) {
           if (hitWall || farOutside) {
             const rr = room.getRect();
             p.x = clamp(p.x, rr.x + p.size / 2, rr.x + rr.w - p.size / 2);
@@ -1773,11 +2060,13 @@
 
     function isOnlineCoopXPChoiceBlocking() {
       if (!isOnlineMatchActive() || game.state !== "playing") return false;
+      if (isOnlineVersusMode()) return false;
       return !!game.xpChoiceOpen || getOnlineRemotePlayers().some(entry => !!entry.player.xpChoiceOpen);
     }
 
     function isOnlineCoopOrbBlocking() {
       if (!isOnlineMatchActive() || game.state !== "playing") return false;
+      if (isOnlineVersusMode()) return false;
       if (game.waveState !== "intermission") return false;
       return !!game.upgradePickup || !!game.upgradeShopOpen || getOnlineRemotePlayers().some(entry => !!entry.player.orbBlocking);
     }
@@ -1793,6 +2082,7 @@
     function shouldRunLocalEnemySimulation() {
       // Offline: el juego funciona igual que siempre.
       // Online: solo el host simula enemigos/oleadas; el invitado recibe snapshots.
+      if (isOnlineVersusMode()) return false;
       if (onlineRoom.reconnecting && onlineRoom.playerId && onlineRoom.playerId !== "p1") return false;
       return !isOnlineMatchActive() || isOnlineHost();
     }
@@ -2240,6 +2530,12 @@
         onlineReviveState.progress = 0;
         return;
       }
+      if (isOnlineVersusMode()) {
+        onlineReviveState.targetId = "";
+        onlineReviveState.progress = 0;
+        mobileInput.revive = false;
+        return;
+      }
 
       const target = getRemoteDownedTargetForRevive();
 
@@ -2267,6 +2563,7 @@
 
     function checkOnlineCoopGameOver() {
       if (!isOnlineMatchActive() || game.state !== "playing") return;
+      if (isOnlineVersusMode()) return;
       const connectedIds = getOnlineConnectedPlayerIds();
       if (!connectedIds.length) return;
 
@@ -2530,6 +2827,7 @@
 
     function sendOnlineEnemyAttackEvent(event) {
       if (!isOnlineHost()) return;
+      if (isOnlineVersusMode()) return;
       if (!onlineRoom.socket || onlineRoom.socket.readyState !== WebSocket.OPEN) return;
       if (game.state !== "playing") return;
       if (!event || typeof event !== "object") return;
@@ -2695,6 +2993,7 @@
 
     function sendOnlineEnemySnapshot(dt) {
       if (!isOnlineHost()) return;
+      if (isOnlineVersusMode()) return;
       if (game.state !== "playing") return;
 
       onlineEnemySendTimer -= dt;
@@ -3184,6 +3483,13 @@
       onlineRoom.reconnecting = false;
       onlineRoom.playerId = "";
       onlineRoom.players = {};
+      onlineRoom.roomMode = "normal";
+      onlineRoom.versus = {
+        score: { p1: 0, p2: 0 },
+        round: 0,
+        targetScore: 3,
+        matchOver: false,
+      };
     }
 
     function clearOnlineReconnectTimer() {
@@ -3209,7 +3515,7 @@
       const delay = Math.min(5200, 450 + onlineReconnectAttempts * 420);
       onlineReconnectTimer = setTimeout(() => {
         onlineReconnectTimer = null;
-        connectOnlineRoom(roomCode, playerName, mode, true);
+        connectOnlineRoom(roomCode, playerName, mode, true, onlineRoom.roomMode || game.multiplayer.roomMode || "normal");
       }, delay);
     }
 
@@ -3231,18 +3537,21 @@
       resetOnlineRoomState();
     }
 
-    function connectOnlineRoom(roomCode, playerName, mode, reconnecting = false) {
+    function connectOnlineRoom(roomCode, playerName, mode, reconnecting = false, roomMode = "") {
       if (!reconnecting) {
         onlineReconnectAttempts = 0;
         clearOnlineReconnectTimer();
       }
       const previousPlayerId = onlineRoom.playerId;
       const previousPlayers = onlineRoom.players;
+      const previousRoomMode = onlineRoom.roomMode || game.multiplayer.roomMode || roomMode;
+      const cleanRoomMode = normalizeOnlineRoomMode(roomMode || previousRoomMode);
       closeOnlineSocket(false);
       if (reconnecting) {
         onlineRoom.playerId = previousPlayerId;
         onlineRoom.players = previousPlayers || {};
       }
+      applyOnlineRoomMode(reconnecting ? previousRoomMode : cleanRoomMode);
 
       const cleanCode = String(roomCode || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
       const cleanName = String(playerName || "Jugador").trim().slice(0, 18) || "Jugador";
@@ -3259,7 +3568,7 @@
       game.multiplayer.joinError = "";
 
       const resumeId = reconnecting && previousPlayerId ? previousPlayerId : "";
-      const url = `${WS_LOCAL_URL}?room=${encodeURIComponent(cleanCode)}&name=${encodeURIComponent(cleanName)}${resumeId ? `&resume=${encodeURIComponent(resumeId)}` : ""}`;
+      const url = `${WS_LOCAL_URL}?room=${encodeURIComponent(cleanCode)}&name=${encodeURIComponent(cleanName)}&mode=${encodeURIComponent(cleanRoomMode)}${resumeId ? `&resume=${encodeURIComponent(resumeId)}` : ""}`;
       const socket = new WebSocket(url);
       onlineRoom.socket = socket;
 
@@ -3309,6 +3618,8 @@
       if (msg.type === "connected") {
         onlineRoom.playerId = msg.playerId || "";
         onlineRoom.players = msg.players || {};
+        applyOnlineRoomMode(msg.roomMode || onlineRoom.roomMode || game.multiplayer.roomMode);
+        applyOnlineVersusState(msg.versus || onlineRoom.versus);
 
         // Si intentás unirte a una sala inexistente, Cloudflare crea el objeto y te da p1.
         // Para el cliente, eso significa que la sala no existía todavía.
@@ -3331,6 +3642,8 @@
 
       if (msg.type === "room_update") {
         onlineRoom.players = msg.players || {};
+        applyOnlineRoomMode(msg.roomMode || onlineRoom.roomMode || game.multiplayer.roomMode);
+        applyOnlineVersusState(msg.versus || onlineRoom.versus);
         syncOnlineLobbyPlayers(onlineRoom.players);
         game.multiplayer.status = "";
         return;
@@ -3338,6 +3651,8 @@
 
       if (msg.type === "game_started") {
         onlineRoom.players = msg.players || onlineRoom.players;
+        applyOnlineRoomMode(msg.roomMode || onlineRoom.roomMode || game.multiplayer.roomMode);
+        applyOnlineVersusState(msg.versus || onlineRoom.versus);
         syncOnlineLobbyPlayers(onlineRoom.players);
         game.multiplayer.status = "Partida online iniciada.";
         startGame();
@@ -3371,7 +3686,23 @@
         return;
       }
 
+      if (msg.type === "versus_pulse") {
+        spawnRemoteVersusPulse(msg.pulse);
+        return;
+      }
+
+      if (msg.type === "versus_round_over") {
+        handleOnlineVersusRoundOver(msg);
+        return;
+      }
+
+      if (msg.type === "versus_match_over") {
+        handleOnlineVersusMatchOver(msg);
+        return;
+      }
+
       if (msg.type === "enemy_state") {
+        if (isOnlineVersusMode()) return;
         applyOnlineEnemySnapshot(msg);
         return;
       }
@@ -3436,7 +3767,7 @@
 
     function syncOnlineLobbyPlayers(players) {
       const local = players?.[onlineRoom.playerId];
-      const remoteNames = ONLINE_PLAYER_IDS
+      const remoteNames = getOnlineRoomPlayerIds()
         .filter(id => id !== onlineRoom.playerId && players?.[id]?.connected)
         .map(id => getOnlinePlayerDisplayName(id, players[id]));
 
@@ -3458,22 +3789,24 @@
         game.multiplayer.joinError = "WebSocket no conectado.";
         return;
       }
-      socket.send(JSON.stringify({ type: "start_game" }));
+      socket.send(JSON.stringify({ type: "start_game", roomMode: game.multiplayer.roomMode || "normal" }));
     }
 
-    function createMultiplayerRoom() {
+    function createMultiplayerRoom(roomMode = "normal") {
+      const normalizedMode = normalizeOnlineRoomMode(roomMode);
       const code = generateRoomCode();
       const name = getOnlinePlayerName("Jugador 1");
 
       game.multiplayer.isHost = true;
       game.multiplayer.roomCode = code;
+      applyOnlineRoomMode(normalizedMode);
       game.multiplayer.localPlayerName = name;
       game.multiplayer.remotePlayerName = "Esperando jugador...";
-      game.multiplayer.status = "Creando sala real...";
+      game.multiplayer.status = normalizedMode === "versus" ? "Creando sala versus..." : "Creando sala real...";
       game.multiplayer.joinError = "";
       setMenuMode("roomLobby");
 
-      connectOnlineRoom(code, name, "create");
+      connectOnlineRoom(code, name, "create", false, normalizedMode);
     }
 
     function joinMultiplayerRoomFromInput() {
@@ -3487,19 +3820,21 @@
 
       game.multiplayer.isHost = false;
       game.multiplayer.roomCode = code;
+      applyOnlineRoomMode("normal");
       game.multiplayer.localPlayerName = name;
       game.multiplayer.remotePlayerName = "Buscando host...";
       game.multiplayer.status = "Uniéndose por WebSocket...";
       game.multiplayer.joinError = "";
       setMenuMode("roomLobby");
 
-      connectOnlineRoom(code, name, "join");
+      connectOnlineRoom(code, name, "join", false, "normal");
     }
 
     function leaveMultiplayerRoom() {
       closeOnlineSocket(true);
       game.multiplayer.isHost = false;
       game.multiplayer.roomCode = "";
+      applyOnlineRoomMode("normal");
       game.multiplayer.localPlayerName = getOnlinePlayerName("Jugador");
       game.multiplayer.remotePlayerName = "";
       game.multiplayer.status = "Sin conexión";
@@ -3641,7 +3976,7 @@
 
       if (e.key.toLowerCase() === "r") {
         if (isOnlineMatchActive()) {
-          if (game.state === "playing" && isOnlineHost()) {
+          if (game.state === "playing" && isOnlineHost() && !isOnlineVersusMode()) {
             requestOnlineGameOver("restart");
           }
         } else {
@@ -3783,7 +4118,20 @@
         remotePlayerName: "",
         status: "Sin conexión",
         joinError: "",
+        roomMode: "normal",
         localCreatedRooms: {},
+      },
+      versus: {
+        score: { p1: 0, p2: 0 },
+        round: 0,
+        targetScore: 3,
+        pendingRoundLost: false,
+        shootLockTimer: 0,
+        roundBannerTimer: 0,
+        roundBannerText: "",
+        roundBannerSubText: "",
+        matchOver: false,
+        returningToMenu: false,
       },
       roomStartTimer: 0,
       roomStartDelay: 0.5,
@@ -5368,7 +5716,11 @@
           triggerScreenShake(4, 0.12);
         } else {
           if (isOnlineMatchActive()) {
-            setLocalPlayerDowned();
+            if (isOnlineVersusMode()) {
+              requestOnlineVersusRoundLost();
+            } else {
+              setLocalPlayerDowned();
+            }
           } else {
             startGameOver();
           }
@@ -5424,7 +5776,16 @@
       resetGame();
       game.state = "playing";
 
-      if (isOnlineMatchActive()) {
+      if (isOnlineVersusMode()) {
+        setupOnlineVersusRun(true);
+        clearInputs();
+        syncRoomCodeBox();
+        return;
+      }
+
+      if (isOnlineVersusMode()) {
+        setupOnlineVersusRun(true);
+      } else if (isOnlineMatchActive()) {
         game.wave = 0;
         game.waveState = "intermission";
         game.intermissionTimer = 5;
@@ -5512,7 +5873,9 @@
       dashBursts.length = 0;
       game.pointsVisual = 0;
       game.pointsPulse = 0;
-      if (isOnlineMatchActive()) {
+      if (isOnlineVersusMode()) {
+        setupOnlineVersusRun(true);
+      } else if (isOnlineMatchActive()) {
         game.wave = 0;
         game.waveState = "intermission";
         game.intermissionTimer = 5;
@@ -7371,6 +7734,12 @@
 
       spendStamina(staminaCost);
       spawnPlayerPulsadorRing(player.x, player.y);
+      if (isOnlineVersusMode()) {
+        sendOnlineVersusPulse(player.x, player.y);
+        game.versus.shootLockTimer = 3;
+        mouse.down = false;
+        mobileInput.leftFire = false;
+      }
       game.pulsadorCooldown = game.pulsadorInterval;
       game.waveFlashTimer = Math.min(game.waveFlashDuration, 0.08);
       return true;
@@ -7751,6 +8120,7 @@ if (player.stamina <= 0) return false;
       if (game.weaponMode !== "multiShot") return false;
       if (game.state !== "playing" || game.settingsOpen || game.upgradeShopOpen) return false;
       if (game.waveState !== "combat" || game.roomStartTimer > 0) return false;
+      if (isOnlineVersusMode() && game.versus.shootLockTimer > 0) return false;
       if (game.multiShotCooldown > 0) return false;
       if (player.stamina <= 0) return false;
 
@@ -7760,7 +8130,7 @@ if (player.stamina <= 0) return false;
       const baseAngle = Math.atan2(mouse.y - player.y, mouse.x - player.x);
       const spread = 0.22;
       const size = 11 * 1.15;
-      const damage = 1.5;
+      const damage = isOnlineVersusMode() ? 1 : 1.5;
 
       shootAngledProjectile(baseAngle - spread, size, damage);
       shootAngledProjectile(baseAngle, size, damage);
@@ -8054,6 +8424,14 @@ if (player.stamina <= 0) return false;
         game.multiShotCooldown = Math.max(0, game.multiShotCooldown - dt);
       }
 
+      if (game.versus.shootLockTimer > 0) {
+        game.versus.shootLockTimer = Math.max(0, game.versus.shootLockTimer - dt);
+      }
+
+      if (game.versus.roundBannerTimer > 0) {
+        game.versus.roundBannerTimer = Math.max(0, game.versus.roundBannerTimer - dt);
+      }
+
       if (game.preciseShotCooldown > 0 && game.waveState === "combat" && !game.upgradeShopOpen) {
         game.preciseShotCooldown = Math.max(0, game.preciseShotCooldown - dt);
       }
@@ -8121,14 +8499,17 @@ if (player.stamina <= 0) return false;
           player.wasDashing = false;
         }
 
-        updateOnlineRevive(dt);
-        checkOnlineCoopGameOver();
-
-        if (shouldRunLocalEnemySimulation()) {
+        if (isOnlineVersusMode()) {
+          updateHazards(dt);
+        } else if (shouldRunLocalEnemySimulation()) {
+          updateOnlineRevive(dt);
+          checkOnlineCoopGameOver();
           updateEnemies(dt);
           updateHazards(dt);
           updateWaveSystem(dt);
         } else {
+          updateOnlineRevive(dt);
+          checkOnlineCoopGameOver();
           // Invitado online: enemigos/oleada vienen del host por WebSocket.
           // Pero el jugador invitado SÍ puede disparar, actualizar sus propias balas
           // y ver partículas de impacto de forma local.
@@ -9523,7 +9904,8 @@ if (player.stamina <= 0) return false;
 
       if (game.menuMode === "multiplayer") {
         const mp = getMultiplayerButtonRects();
-        if (pointInRect(x, y, mp.create)) { createMultiplayerRoom(); return true; }
+        if (pointInRect(x, y, mp.createNormal || mp.create)) { createMultiplayerRoom("normal"); return true; }
+        if (mp.createVersus && pointInRect(x, y, mp.createVersus)) { createMultiplayerRoom("versus"); return true; }
         if (pointInRect(x, y, mp.join)) { setMenuMode("joinRoom"); setTimeout(() => roomCodeInput.focus(), 50); return true; }
         if (pointInRect(x, y, mp.back)) { setMenuMode("main"); return true; }
         return false;
@@ -9932,7 +10314,8 @@ if (player.stamina <= 0) return false;
       ctx.restore();
 
       const b = getMultiplayerButtonRects();
-      drawMenuButton(b.create, "CREAR SALA", true);
+      drawMenuButton(b.createNormal || b.create, "NORMAL", true);
+      if (b.createVersus) drawMenuButton(b.createVersus, "VERSUS", false);
       drawMenuButton(b.join, "UNIRSE A SALA", false);
       drawMenuButton(b.back, "VOLVER", false);
     }
@@ -10289,7 +10672,8 @@ if (player.stamina <= 0) return false;
       drawMenuStatusPill(titleX + (center ? 0 : 2), titleY + lineGap + (compactLandscape ? 58 : 74), "WEBSOCKET · CLOUDFLARE", true, center ? "center" : "left");
 
       const b = getMultiplayerButtonRects();
-      drawMenuButton(b.create, "CREAR SALA", true);
+      drawMenuButton(b.createNormal || b.create, "NORMAL", true);
+      if (b.createVersus) drawMenuButton(b.createVersus, "VERSUS", false);
       drawMenuButton(b.join, "UNIRSE A SALA", false);
       drawMenuButton(b.back, "VOLVER", false);
     }
@@ -10798,14 +11182,16 @@ if (player.stamina <= 0) return false;
       const portrait = isPortraitMenuLayout();
       const compact = isCompactLandscapeMenuLayout();
       const w = Math.min(p.w - (portrait ? 54 : 58), compact ? 310 : 370);
-      const h = portrait ? 48 : (compact ? 42 : 56);
-      const gap = portrait ? 12 : 14;
+      const h = portrait ? 44 : (compact ? 38 : 50);
+      const gap = portrait ? 9 : 12;
       const x = p.x + p.w / 2 - w / 2;
-      const y = p.y + p.h - h * 3 - gap * 2 - (portrait ? 42 : 36);
+      const y = p.y + p.h - h * 4 - gap * 3 - (portrait ? 34 : 30);
       return {
         create: { x, y, w, h },
-        join: { x, y: y + h + gap, w, h },
-        back: { x, y: y + (h + gap) * 2, w, h },
+        createNormal: { x, y, w, h },
+        createVersus: { x, y: y + h + gap, w, h },
+        join: { x, y: y + (h + gap) * 2, w, h },
+        back: { x, y: y + (h + gap) * 3, w, h },
       };
     }
 
@@ -11013,6 +11399,35 @@ if (player.stamina <= 0) return false;
       ctx.restore();
     }
 
+    function drawIOSFullscreenInstallHint() {
+      if (!isIOSDevice() || isIOSStandaloneMode()) return;
+      if (game.menuMode !== "main") return;
+
+      const portrait = isPortraitMenuLayout();
+      const panel = getMenuLeftPanelRect();
+      const b = getMenuButtonRects();
+      const w = Math.min(panel.w - 48, portrait ? 330 : 360);
+      const h = portrait ? 42 : 44;
+      const x = panel.x + panel.w / 2 - w / 2;
+      const y = Math.min(panel.y + panel.h - h - 12, b.settings.y + b.settings.h + (portrait ? 14 : 18));
+
+      ctx.save();
+      drawRoundedRect(x, y, w, h, 8);
+      ctx.fillStyle = "rgba(6,8,14,0.78)";
+      ctx.fill();
+      ctx.strokeStyle = "rgba(66,223,255,0.42)";
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.font = `900 ${portrait ? 9 : 10}px Inter, Segoe UI, Arial, sans-serif`;
+      ctx.fillStyle = "#42dfff";
+      ctx.fillText("iPhone: compartir -> Agregar a pantalla de inicio", x + w / 2, y + h / 2 - 6);
+      ctx.fillStyle = "rgba(255,255,255,0.54)";
+      ctx.fillText("desde ahí abre sin barra del navegador", x + w / 2, y + h / 2 + 8);
+      ctx.restore();
+    }
+
     function drawMainMenu() {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       drawMenuBackground();
@@ -11038,6 +11453,7 @@ if (player.stamina <= 0) return false;
         drawMenuButton(b.play, "JUGAR", true);
         drawMenuButton(b.multiplayer, "MULTIJUGADOR", false);
         drawMenuButton(b.settings, "AJUSTES", false);
+        drawIOSFullscreenInstallHint();
         drawMenuPreview();
       } else if (game.menuMode === "multiplayer") {
         drawMultiplayerMenu(panel);
@@ -11105,7 +11521,8 @@ if (player.stamina <= 0) return false;
       ctx.fillText("WEBSOCKET · CLOUDFLARE", x, panel.y + (compact ? 200 : 248));
       ctx.restore();
       const b = getMultiplayerButtonRects();
-      drawMenuButton(b.create, "CREAR SALA", true);
+      drawMenuButton(b.createNormal || b.create, "NORMAL", true);
+      if (b.createVersus) drawMenuButton(b.createVersus, "VERSUS", false);
       drawMenuButton(b.join, "UNIRSE A SALA", false);
       drawMenuButton(b.back, "VOLVER", false);
     }
@@ -11145,16 +11562,20 @@ if (player.stamina <= 0) return false;
       ctx.font = `950 ${compact ? 44 : portrait ? 58 : 66}px Inter, Segoe UI, Arial, sans-serif`;
       ctx.fillStyle = game.ruby;
       ctx.fillText(mp.roomCode || "----", cx, panel.y + (compact ? 126 : portrait ? 170 : 178));
+      ctx.font = "950 11px Inter, Segoe UI, Arial, sans-serif";
+      ctx.fillStyle = mp.roomMode === "versus" ? ONLINE_REMOTE_SECONDARY_COLOR : "#42dfff";
+      ctx.fillText(mp.roomMode === "versus" ? "VERSUS 1V1" : "NORMAL CO-OP", cx, panel.y + (compact ? 144 : portrait ? 192 : 202));
       ctx.restore();
       const b = getRoomLobbyButtonRects();
       const cardW = Math.max(240, Math.min(560, panel.w - (compact ? 58 : portrait ? 48 : 180)));
       const cardX = cx - cardW / 2;
       const slotGap = compact ? 7 : portrait ? 10 : 14;
-      const slotY = panel.y + (compact ? 148 : portrait ? 214 : 224);
+      const slotY = panel.y + (compact ? 160 : portrait ? 214 : 224);
       const available = Math.max(126, b.start.y - slotY - 12);
-      const slotH = Math.max(38, Math.min(compact ? 48 : portrait ? 56 : 62, (available - slotGap * 2) / 3));
-      for (let i = 0; i < ONLINE_PLAYER_IDS.length; i++) {
-        const id = ONLINE_PLAYER_IDS[i];
+      const slotIds = mp.roomMode === "versus" ? ONLINE_VERSUS_PLAYER_IDS : ONLINE_PLAYER_IDS;
+      const slotH = Math.max(38, Math.min(compact ? 48 : portrait ? 56 : 62, (available - slotGap * Math.max(0, slotIds.length - 1)) / slotIds.length));
+      for (let i = 0; i < slotIds.length; i++) {
+        const id = slotIds[i];
         const data = onlineRoom.players?.[id];
         const active = !!data?.connected || onlineRoom.playerId === id;
         const isLocal = onlineRoom.playerId === id;
@@ -11629,8 +12050,69 @@ if (player.stamina <= 0) return false;
       ctx.restore();
     }
 
+    function drawVersusUI() {
+      if (!isOnlineVersusMode() || game.state === "menu") return;
+
+      const score = game.versus.score || { p1: 0, p2: 0 };
+      const localId = onlineRoom.playerId || "p1";
+      const rivalId = getOnlineVersusOpponentId(localId);
+      const localScore = Number(score[localId]) || 0;
+      const rivalScore = Number(score[rivalId]) || 0;
+      const lock = Math.ceil(Math.max(0, game.versus.shootLockTimer || 0));
+      const x = mobileInput.enabled ? 12 : 24;
+      const y = mobileInput.enabled ? 10 : 22;
+      const w = mobileInput.enabled ? Math.min(canvas.width - 88, 300) : 260;
+      const h = lock > 0 ? 114 : 94;
+
+      ctx.save();
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      drawRoundedRect(x, y, w, h, 16);
+      ctx.fillStyle = "rgba(5,7,12,0.82)";
+      ctx.fill();
+      ctx.strokeStyle = "rgba(246,255,117,0.58)";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      ctx.fillStyle = ONLINE_REMOTE_SECONDARY_COLOR;
+      ctx.fillRect(x + 16, y + 16, 5, 30);
+      ctx.font = "900 20px Inter, Montserrat, Arial, sans-serif";
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText("VERSUS", x + 32, y + 12);
+      ctx.font = "900 13px Inter, Montserrat, Arial, sans-serif";
+      ctx.fillStyle = "#42dfff";
+      ctx.fillText(`VOS ${localScore}  -  ${rivalScore} RIVAL`, x + 32, y + 42);
+      ctx.font = "800 11px Inter, Montserrat, Arial, sans-serif";
+      ctx.fillStyle = "rgba(255,255,255,0.66)";
+      ctx.fillText(`OBJETIVO: ${game.versus.targetScore || 3}`, x + 32, y + 64);
+      if (lock > 0) {
+        ctx.fillStyle = game.ruby;
+        ctx.fillText(`PULSADOR: SIN DISPARO ${lock}s`, x + 32, y + 84);
+      }
+      ctx.restore();
+
+      if (game.versus.roundBannerTimer > 0) {
+        const alpha = clamp(game.versus.roundBannerTimer / 0.25, 0, 1);
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.font = "1000 34px Inter, Montserrat, Arial, sans-serif";
+        ctx.fillStyle = game.versus.roundBannerText === "GANASTE" ? "#42dfff" : (game.versus.roundBannerText === "PERDISTE" ? game.ruby : "#ffffff");
+        ctx.fillText(game.versus.roundBannerText || "", canvas.width / 2, canvas.height * 0.24);
+        ctx.font = "900 17px Inter, Montserrat, Arial, sans-serif";
+        ctx.fillStyle = "rgba(255,255,255,0.82)";
+        ctx.fillText(game.versus.roundBannerSubText || "", canvas.width / 2, canvas.height * 0.24 + 34);
+        ctx.restore();
+      }
+    }
+
     function drawWaveUI() {
       if (game.state === "menu") return;
+      if (isOnlineVersusMode()) {
+        drawVersusUI();
+        return;
+      }
 
       const enemiesText = game.waveState === "combat" ? enemies.length : 0;
       const bossWave = currentCombatWaveHasBoss();
@@ -11938,6 +12420,7 @@ if (player.stamina <= 0) return false;
 
     function drawOnlineReviveUI() {
       if (!isOnlineMatchActive() || game.state !== "playing") return;
+      if (isOnlineVersusMode()) return;
 
       const target = getRemoteDownedTargetForRevive();
       const anyRemoteDowned = getOnlineRemotePlayers().some(entry => !!entry.player.downed);
@@ -12236,20 +12719,22 @@ if (player.stamina <= 0) return false;
       ctx.restore();
 
       drawWaveUI();
-      drawBossUI();
+      if (!isOnlineVersusMode()) drawBossUI();
       drawWaveBanner();
       drawWaveFlash();
       drawStaminaBar();
-      drawXPBar();
+      if (!isOnlineVersusMode()) drawXPBar();
       drawLives();
       drawFearOverlay();
       ctx.restore();
 
       drawSettingsIcon();
       drawSettingsPanel();
-      drawUpgradeShop();
-      drawXPChoiceUI();
-      drawOnlineReviveUI();
+      if (!isOnlineVersusMode()) {
+        drawUpgradeShop();
+        drawXPChoiceUI();
+        drawOnlineReviveUI();
+      }
 
       // En muerte/fadeOut, el fade negro no debe tapar la pantalla de muerte.
       // Primero dibujamos el negro y después el panel de muerte por encima.
