@@ -586,6 +586,35 @@
       transform: translateY(1px);
     }
 
+    #versus-points-box {
+      position: fixed;
+      z-index: 46;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      pointer-events: auto;
+      font-family: Inter, "Segoe UI", Arial, sans-serif;
+    }
+
+    #versus-points-input {
+      width: 92px;
+      height: 34px;
+      border: 2px solid rgba(246, 255, 117, 0.88);
+      border-radius: 12px;
+      background: linear-gradient(180deg, rgba(15, 17, 28, 0.98), rgba(5, 6, 12, 0.98));
+      color: rgba(255,255,255,0.96);
+      outline: none;
+      padding: 0 10px;
+      font: 950 16px Inter, "Segoe UI", Arial, sans-serif;
+      text-align: center;
+      box-shadow: 0 10px 24px rgba(0,0,0,0.28), 0 0 0 1px rgba(255,255,255,0.06) inset;
+    }
+
+    #versus-points-input:focus {
+      border-color: #42dfff;
+      box-shadow: 0 10px 24px rgba(0,0,0,0.28), 0 0 0 3px rgba(66,223,255,0.14);
+    }
+
   
     /* FIREBASE AUTH PATCH */
     #auth-screen{position:fixed;inset:0;z-index:100;display:none;align-items:center;justify-content:center;background:radial-gradient(circle at 50% 50%,rgba(236,0,116,.12),transparent 42%),linear-gradient(180deg,rgba(0,0,0,.74),rgba(0,0,0,.94));font-family:Inter,"Segoe UI",Arial,sans-serif;color:white}
@@ -646,6 +675,10 @@
     <button id="room-code-cancel" type="button">CANCELAR</button>
   </div>
 
+  <div id="versus-points-box">
+    <input id="versus-points-input" type="number" min="1" max="100" step="1" autocomplete="off" spellcheck="false" />
+  </div>
+
 <div id="mobile-controls" aria-hidden="true">
     <div id="touch-joystick-base"><div id="touch-joystick-knob"></div></div>
     <div id="touch-fullscreen" class="touch-button">PANTALLA<br>COMPLETA</div>
@@ -669,6 +702,8 @@
     const roomCodeInput = document.getElementById("room-code-input");
     const roomCodeJoin = document.getElementById("room-code-join");
     const roomCodeCancel = document.getElementById("room-code-cancel");
+    const versusPointsBox = document.getElementById("versus-points-box");
+    const versusPointsInput = document.getElementById("versus-points-input");
     const mobileControlsEl = document.getElementById("mobile-controls");
     const touchJoystickBase = document.getElementById("touch-joystick-base");
     const touchJoystickKnob = document.getElementById("touch-joystick-knob");
@@ -1150,6 +1185,8 @@
       updateMobileAimTarget();
       if (game.rightAbility === "preciseShot") {
         shootPreciseSingleShot("right");
+      } else if (game.rightAbility === "curador") {
+        useCuradorAbility();
       } else {
         usePulsadorAbility();
       }
@@ -1178,7 +1215,7 @@
     }
 
     function isTypingInSettingsBox() {
-      return document.activeElement === settingsCheatInput || document.activeElement === roomCodeInput;
+      return document.activeElement === settingsCheatInput || document.activeElement === roomCodeInput || document.activeElement === versusPointsInput;
     }
 
     settingsCheatApply.addEventListener("click", () => {
@@ -1227,16 +1264,37 @@
         game.multiplayer.joinError = "";
       }
       syncRoomCodeBox();
+      syncVersusPointsBox();
       clearInputs();
     }
 
-    const GAME_VERSION_LABEL = "alpha-17";
+    const GAME_VERSION_LABEL = "alpha-18";
     const WS_LOCAL_URL = "wss://jsab-multiplayer.netherportal6611.workers.dev/ws";
     const ONLINE_PLAYER_IDS = ["p1", "p2", "p3"];
-    const ONLINE_VERSUS_PLAYER_IDS = ["p1", "p2"];
+    const ONLINE_VERSUS_PLAYER_IDS = ["p1", "p2", "p3"];
     const ONLINE_REMOTE_PRIMARY_COLOR = "#00ff8c";
     const ONLINE_REMOTE_SECONDARY_COLOR = "#f6ff75";
     const ONLINE_RECONNECT_MAX_ATTEMPTS = 8;
+
+    function getDefaultOnlineVersusSettings() {
+      return {
+        primaryWeapon: "multiShot",
+        rightAbility: "pulsador",
+        lives: 3,
+        targetScore: 3,
+      };
+    }
+
+    function sanitizeOnlineVersusSettings(settings = {}) {
+      const input = settings && typeof settings === "object" ? settings : {};
+      const defaults = getDefaultOnlineVersusSettings();
+      const primaryWeapon = String(input.primaryWeapon || defaults.primaryWeapon) === "normal" ? "normal" : "multiShot";
+      const rightAbility = String(input.rightAbility || defaults.rightAbility) === "curador" ? "curador" : "pulsador";
+      const requestedLives = Math.floor(Number(input.lives) || defaults.lives);
+      const lives = [3, 5, 7].includes(requestedLives) ? requestedLives : defaults.lives;
+      const targetScore = clamp(Math.floor(Number(input.targetScore) || defaults.targetScore), 1, 100);
+      return { primaryWeapon, rightAbility, lives, targetScore };
+    }
 
     const onlineRoom = {
       socket: null,
@@ -1247,10 +1305,11 @@
       players: {},
       roomMode: "normal",
       versus: {
-        score: { p1: 0, p2: 0 },
+        score: { p1: 0, p2: 0, p3: 0 },
         round: 0,
         targetScore: 3,
         matchOver: false,
+        settings: getDefaultOnlineVersusSettings(),
       },
     };
 
@@ -1385,20 +1444,41 @@
       const mode = normalizeOnlineRoomMode(roomMode);
       onlineRoom.roomMode = mode;
       if (game.multiplayer) game.multiplayer.roomMode = mode;
+      syncVersusPointsBox();
       syncMobileControlsState();
       return mode;
     }
 
+    function applyOnlineVersusSettings(settings = {}) {
+      const clean = sanitizeOnlineVersusSettings(settings);
+      onlineRoom.versus.settings = clean;
+      onlineRoom.versus.targetScore = clean.targetScore;
+      if (game.versusSettings) {
+        game.versusSettings = { ...clean };
+      }
+      if (game.versus) {
+        game.versus.targetScore = clean.targetScore;
+      }
+      if (versusPointsInput && document.activeElement !== versusPointsInput) {
+        versusPointsInput.value = String(clean.targetScore);
+      }
+      syncVersusPointsBox();
+      return clean;
+    }
+
     function applyOnlineVersusState(versus = {}) {
       const score = versus.score || {};
+      const settings = sanitizeOnlineVersusSettings(versus.settings || onlineRoom.versus.settings);
       onlineRoom.versus = {
         score: {
           p1: Math.max(0, Number(score.p1) || 0),
           p2: Math.max(0, Number(score.p2) || 0),
+          p3: Math.max(0, Number(score.p3) || 0),
         },
         round: Math.max(0, Math.floor(Number(versus.round) || 0)),
-        targetScore: Math.max(1, Math.floor(Number(versus.targetScore) || 3)),
+        targetScore: Math.max(1, Math.floor(Number(versus.targetScore) || settings.targetScore)),
         matchOver: !!versus.matchOver,
+        settings,
       };
       if (game.versus) {
         game.versus.score = { ...onlineRoom.versus.score };
@@ -1406,6 +1486,7 @@
         game.versus.targetScore = onlineRoom.versus.targetScore;
         game.versus.matchOver = onlineRoom.versus.matchOver;
       }
+      applyOnlineVersusSettings(settings);
     }
 
     function getOnlineConnectedPlayerIds() {
@@ -1622,16 +1703,21 @@
     }
 
     function getOnlineVersusOpponentId(id = onlineRoom.playerId) {
-      return id === "p1" ? "p2" : "p1";
+      return getOnlineConnectedPlayerIds().find(otherId => otherId !== id) || (id === "p1" ? "p2" : "p1");
     }
 
     function setOnlineVersusSpawnPosition() {
       const rr = room.getRect();
-      const leftSide = onlineRoom.playerId !== "p2";
-      player.x = rr.x + rr.w * (leftSide ? 0.25 : 0.75);
-      player.y = rr.y + rr.h * 0.5;
-      mouse.x = rr.x + rr.w * (leftSide ? 0.75 : 0.25);
-      mouse.y = player.y;
+      const spots = {
+        p1: { x: 0.24, y: 0.62, aimX: 0.72, aimY: 0.50 },
+        p2: { x: 0.76, y: 0.62, aimX: 0.28, aimY: 0.50 },
+        p3: { x: 0.50, y: 0.28, aimX: 0.50, aimY: 0.72 },
+      };
+      const spot = spots[onlineRoom.playerId] || spots.p1;
+      player.x = rr.x + rr.w * spot.x;
+      player.y = rr.y + rr.h * spot.y;
+      mouse.x = rr.x + rr.w * spot.aimX;
+      mouse.y = rr.y + rr.h * spot.aimY;
     }
 
     function clearOnlineVersusCombatObjects() {
@@ -1648,6 +1734,8 @@
 
     function setupOnlineVersusRun(showBanner = true) {
       applyOnlineRoomMode("versus");
+      const settings = sanitizeOnlineVersusSettings(game.versusSettings || onlineRoom.versus.settings);
+      applyOnlineVersusSettings(settings);
       game.wave = 0;
       game.waveState = "combat";
       game.waveTimer = 0;
@@ -1662,15 +1750,16 @@
       game.xpChoices = [];
       game.upgradePickup = null;
       game.upgradeShopOpen = false;
-      game.hasCurador = false;
+      game.hasCurador = settings.rightAbility === "curador";
       game.curadorCooldown = 0;
-      game.weaponMode = "multiShot";
+      game.weaponMode = settings.primaryWeapon;
       game.multiShotCooldown = 0;
-      game.hasPulsador = true;
+      game.hasPulsador = settings.rightAbility === "pulsador";
       game.pulsadorCooldown = 0;
-      game.rightAbility = "pulsador";
+      game.rightAbility = settings.rightAbility;
       game.preciseShotCooldown = 0;
       game.versus.pendingRoundLost = false;
+      game.versus.lastDamageOwner = "";
       game.versus.shootLockTimer = 0;
       game.versus.matchOver = false;
       game.versus.returningToMenu = false;
@@ -1680,14 +1769,14 @@
       clearUpgradePickup();
       clearHealPickup();
       clearOnlineVersusCombatObjects();
-      player.maxHp = 3;
-      player.hp = 3;
+      player.maxHp = settings.lives;
+      player.hp = settings.lives;
       resetPlayer();
       setOnlineVersusSpawnPosition();
       player.invincible = true;
       player.hitTimer = 0.8;
       mobileInput.revive = false;
-      if (showBanner) showWaveBanner("VERSUS", "primero a 3 puntos");
+      if (showBanner) showWaveBanner("VERSUS", `primero a ${settings.targetScore} puntos`);
       triggerRoomPulse("#42dfff", 0.42);
       sendOnlinePlayerStateNow();
       syncMobileControlsState();
@@ -1704,6 +1793,21 @@
           x: pos.x,
           y: pos.y,
           damage: 1,
+        }));
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    function sendOnlineVersusSettings(settings = game.versusSettings) {
+      if (!onlineRoom.socket || onlineRoom.socket.readyState !== WebSocket.OPEN) return false;
+      if (!isOnlineHost() || normalizeOnlineRoomMode(game.multiplayer.roomMode) !== "versus") return false;
+      const clean = applyOnlineVersusSettings(settings);
+      try {
+        onlineRoom.socket.send(JSON.stringify({
+          type: "versus_settings",
+          settings: clean,
         }));
         return true;
       } catch {
@@ -1729,6 +1833,7 @@
         maxRadius,
         minRadius: 8,
         color: getOnlineRemoteColor(pulse.owner || ""),
+        owner: pulse.owner || "",
         alpha: 0.42,
         hitPlayer: false,
         damagePlayerAmount: Math.max(1, Number(pulse.damage) || 1),
@@ -1740,6 +1845,9 @@
       if (!isOnlineVersusMode()) return false;
       if (game.versus.pendingRoundLost || game.versus.matchOver) return true;
 
+      const winnerId = ONLINE_PLAYER_IDS.includes(game.versus.lastDamageOwner) && game.versus.lastDamageOwner !== onlineRoom.playerId
+        ? game.versus.lastDamageOwner
+        : getOnlineVersusOpponentId(onlineRoom.playerId);
       game.versus.pendingRoundLost = true;
       player.hp = 0;
       player.downed = true;
@@ -1762,6 +1870,7 @@
         onlineRoom.socket.send(JSON.stringify({
           type: "versus_round_lost",
           round: game.versus.round,
+          winnerId,
         }));
         return true;
       } catch {
@@ -1771,17 +1880,19 @@
 
     function handleOnlineVersusRoundOver(msg) {
       if (!isOnlineVersusMode()) return;
+      applyOnlineVersusSettings(msg.versusSettings || msg.versus?.settings || onlineRoom.versus.settings);
       applyOnlineVersusState({
         score: msg.score || onlineRoom.versus.score,
         round: msg.round,
         targetScore: msg.targetScore,
         matchOver: !!msg.matchOver,
+        settings: msg.versusSettings || msg.versus?.settings || onlineRoom.versus.settings,
       });
       if (msg.players) onlineRoom.players = msg.players;
 
       const winnerName = msg.winnerId === onlineRoom.playerId ? "PUNTO PARA VOS" : "PUNTO RIVAL";
       game.versus.roundBannerText = winnerName;
-      game.versus.roundBannerSubText = `${game.versus.score.p1} - ${game.versus.score.p2}`;
+      game.versus.roundBannerSubText = getOnlineVersusScoreText();
       game.versus.roundBannerTimer = 1.2;
       clearOnlineVersusCombatObjects();
 
@@ -1801,12 +1912,13 @@
         score: msg.score || onlineRoom.versus.score,
         targetScore: msg.targetScore,
         matchOver: true,
+        settings: msg.versusSettings || msg.versus?.settings || onlineRoom.versus.settings,
       });
       const won = msg.winnerId === onlineRoom.playerId;
       game.versus.matchOver = true;
       game.versus.returningToMenu = true;
       game.versus.roundBannerText = won ? "GANASTE" : "PERDISTE";
-      game.versus.roundBannerSubText = `${game.versus.score.p1} - ${game.versus.score.p2}`;
+      game.versus.roundBannerSubText = getOnlineVersusScoreText();
       game.versus.roundBannerTimer = 1.6;
       clearOnlineVersusCombatObjects();
       mouse.down = false;
@@ -1828,6 +1940,13 @@
         syncRoomCodeBox();
         syncMobileControlsState();
       }, 1500);
+    }
+
+    function getOnlineVersusScoreText() {
+      const score = game.versus?.score || onlineRoom.versus?.score || {};
+      return getOnlineConnectedPlayerIds()
+        .map(id => `${getOnlinePlayerDisplayName(id, onlineRoom.players?.[id]).slice(0, 9)} ${Number(score[id]) || 0}`)
+        .join("  |  ");
     }
 
 
@@ -1985,6 +2104,7 @@
       const hit = dx * dx + dy * dy <= Math.pow(projectileRadius + getPlayerHitRadius(), 2);
       if (!hit) return false;
 
+      game.versus.lastDamageOwner = p.owner || "";
       damagePlayer(Math.max(1, Math.round(Number(p.damage) || 1)));
       return true;
     }
@@ -3485,11 +3605,13 @@
       onlineRoom.players = {};
       onlineRoom.roomMode = "normal";
       onlineRoom.versus = {
-        score: { p1: 0, p2: 0 },
+        score: { p1: 0, p2: 0, p3: 0 },
         round: 0,
         targetScore: 3,
         matchOver: false,
+        settings: getDefaultOnlineVersusSettings(),
       };
+      syncVersusPointsBox();
     }
 
     function clearOnlineReconnectTimer() {
@@ -3619,6 +3741,7 @@
         onlineRoom.playerId = msg.playerId || "";
         onlineRoom.players = msg.players || {};
         applyOnlineRoomMode(msg.roomMode || onlineRoom.roomMode || game.multiplayer.roomMode);
+        applyOnlineVersusSettings(msg.versusSettings || msg.versus?.settings || onlineRoom.versus.settings);
         applyOnlineVersusState(msg.versus || onlineRoom.versus);
 
         // Si intentás unirte a una sala inexistente, Cloudflare crea el objeto y te da p1.
@@ -3643,6 +3766,7 @@
       if (msg.type === "room_update") {
         onlineRoom.players = msg.players || {};
         applyOnlineRoomMode(msg.roomMode || onlineRoom.roomMode || game.multiplayer.roomMode);
+        applyOnlineVersusSettings(msg.versusSettings || msg.versus?.settings || onlineRoom.versus.settings);
         applyOnlineVersusState(msg.versus || onlineRoom.versus);
         syncOnlineLobbyPlayers(onlineRoom.players);
         game.multiplayer.status = "";
@@ -3652,6 +3776,7 @@
       if (msg.type === "game_started") {
         onlineRoom.players = msg.players || onlineRoom.players;
         applyOnlineRoomMode(msg.roomMode || onlineRoom.roomMode || game.multiplayer.roomMode);
+        applyOnlineVersusSettings(msg.versusSettings || msg.versus?.settings || onlineRoom.versus.settings);
         applyOnlineVersusState(msg.versus || onlineRoom.versus);
         syncOnlineLobbyPlayers(onlineRoom.players);
         game.multiplayer.status = "Partida online iniciada.";
@@ -3688,6 +3813,12 @@
 
       if (msg.type === "versus_pulse") {
         spawnRemoteVersusPulse(msg.pulse);
+        return;
+      }
+
+      if (msg.type === "versus_settings") {
+        applyOnlineVersusSettings(msg.settings || msg.versusSettings || msg.versus?.settings);
+        if (msg.versus) applyOnlineVersusState(msg.versus);
         return;
       }
 
@@ -3789,6 +3920,7 @@
         game.multiplayer.joinError = "WebSocket no conectado.";
         return;
       }
+      if (game.multiplayer.roomMode === "versus") sendOnlineVersusSettings(game.versusSettings || onlineRoom.versus.settings);
       socket.send(JSON.stringify({ type: "start_game", roomMode: game.multiplayer.roomMode || "normal" }));
     }
 
@@ -3800,6 +3932,7 @@
       game.multiplayer.isHost = true;
       game.multiplayer.roomCode = code;
       applyOnlineRoomMode(normalizedMode);
+      if (normalizedMode === "versus") applyOnlineVersusSettings(game.versusSettings || getDefaultOnlineVersusSettings());
       game.multiplayer.localPlayerName = name;
       game.multiplayer.remotePlayerName = "Esperando jugador...";
       game.multiplayer.status = normalizedMode === "versus" ? "Creando sala versus..." : "Creando sala real...";
@@ -3873,6 +4006,39 @@
       }
     });
 
+    function commitVersusPointsInput() {
+      if (!game.multiplayer.isHost || game.multiplayer.roomMode !== "versus") return;
+      const settings = sanitizeOnlineVersusSettings(game.versusSettings || onlineRoom.versus.settings);
+      settings.targetScore = clamp(Math.floor(Number(versusPointsInput.value) || settings.targetScore), 1, 100);
+      versusPointsInput.value = String(settings.targetScore);
+      game.versusSettings = { ...settings };
+      sendOnlineVersusSettings(settings);
+    }
+
+    versusPointsInput.addEventListener("input", () => {
+      const clean = String(versusPointsInput.value || "").replace(/[^0-9]/g, "").slice(0, 3);
+      versusPointsInput.value = clean;
+      if (clean) commitVersusPointsInput();
+    });
+
+    versusPointsInput.addEventListener("change", commitVersusPointsInput);
+
+    versusPointsInput.addEventListener("keydown", e => {
+      e.stopPropagation();
+      if (e.key === "Enter") {
+        e.preventDefault();
+        commitVersusPointsInput();
+        versusPointsInput.blur();
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        versusPointsInput.blur();
+      }
+    });
+
+    versusPointsInput.addEventListener("mousedown", e => e.stopPropagation());
+    versusPointsInput.addEventListener("keyup", e => e.stopPropagation());
+
     function updateMouseButtons(e) {
       // Click izquierdo: arma principal. Click derecho: habilidad/arma secundaria.
       mouse.down = (e.buttons & 1) !== 0;
@@ -3916,6 +4082,8 @@
         mouse.rightDown = true;
         if (game.rightAbility === "preciseShot") {
           shootPreciseSingleShot("right");
+        } else if (game.rightAbility === "curador") {
+          useCuradorAbility();
         } else {
           usePulsadorAbility();
         }
@@ -4121,11 +4289,13 @@
         roomMode: "normal",
         localCreatedRooms: {},
       },
+      versusSettings: getDefaultOnlineVersusSettings(),
       versus: {
-        score: { p1: 0, p2: 0 },
+        score: { p1: 0, p2: 0, p3: 0 },
         round: 0,
         targetScore: 3,
         pendingRoundLost: false,
+        lastDamageOwner: "",
         shootLockTimer: 0,
         roundBannerTimer: 0,
         roundBannerText: "",
@@ -7799,6 +7969,7 @@
               ring.hitPlayer = true;
             } else {
               ring.hitPlayer = true;
+              if (isOnlineVersusMode() && ring.owner) game.versus.lastDamageOwner = ring.owner;
               damagePlayer(ring.damagePlayerAmount || 1);
             }
           }
@@ -9919,6 +10090,7 @@ if (player.stamina <= 0) return false;
 
       if (game.menuMode === "roomLobby") {
         const lb = getRoomLobbyButtonRects();
+        if (handleVersusSettingsClick(x, y)) return true;
         if (game.multiplayer.isHost && pointInRect(x, y, lb.start)) {
           startOnlineRoomGame();
           return true;
@@ -10353,6 +10525,7 @@ if (player.stamina <= 0) return false;
 
     function drawRoomLobbyMenu(panel) {
       syncRoomCodeBox();
+      syncVersusPointsBox();
       const mp = game.multiplayer;
       const portrait = isPortraitMenuLayout();
       const compactLandscape = isCompactLandscapeMenuLayout();
@@ -10709,6 +10882,7 @@ if (player.stamina <= 0) return false;
 
     function drawRoomLobbyMenu(panel) {
       syncRoomCodeBox();
+      syncVersusPointsBox();
       const mp = game.multiplayer;
       const portrait = isPortraitMenuLayout();
       const compactLandscape = isCompactLandscapeMenuLayout();
@@ -11547,8 +11721,132 @@ if (player.stamina <= 0) return false;
       drawMenuButton(getJoinRoomButtonRects().cancel, "VOLVER", false);
     }
 
+    function getVersusSettingsPanelRect(roomPanel = getMenuRoomPanelRect()) {
+      const compact = isCompactLandscapeMenuLayout();
+      const portrait = isPortraitMenuLayout();
+      const w = portrait ? Math.min(roomPanel.w - 28, 286) : (compact ? 236 : 286);
+      const h = portrait ? 318 : (compact ? 318 : 390);
+      const sideX = roomPanel.x - w - (compact ? 12 : 22);
+      const x = sideX >= 14 ? sideX : Math.max(14, roomPanel.x + 14);
+      const y = portrait ? Math.max(12, roomPanel.y + roomPanel.h - h - 18) : roomPanel.y + (compact ? 16 : 22);
+      return { x, y, w, h };
+    }
+
+    function getVersusSettingsButtonRects(roomPanel = getMenuRoomPanelRect()) {
+      const p = getVersusSettingsPanelRect(roomPanel);
+      const pad = 16;
+      const rowH = 34;
+      const gap = 8;
+      const fullW = p.w - pad * 2;
+      const halfW = (fullW - gap) / 2;
+      const thirdW = (fullW - gap * 2) / 3;
+      const y0 = p.y + 64;
+      return {
+        panel: p,
+        weaponMulti: { x: p.x + pad, y: y0, w: halfW, h: rowH },
+        weaponNormal: { x: p.x + pad + halfW + gap, y: y0, w: halfW, h: rowH },
+        abilityPulse: { x: p.x + pad, y: y0 + 66, w: halfW, h: rowH },
+        abilityHeal: { x: p.x + pad + halfW + gap, y: y0 + 66, w: halfW, h: rowH },
+        lives3: { x: p.x + pad, y: y0 + 132, w: thirdW, h: rowH },
+        lives5: { x: p.x + pad + thirdW + gap, y: y0 + 132, w: thirdW, h: rowH },
+        lives7: { x: p.x + pad + (thirdW + gap) * 2, y: y0 + 132, w: thirdW, h: rowH },
+        pointsInput: { x: p.x + pad, y: y0 + 204, w: fullW - 78, h: rowH },
+        pointsMinus: { x: p.x + p.w - pad - 70, y: y0 + 204, w: 30, h: rowH },
+        pointsPlus: { x: p.x + p.w - pad - 34, y: y0 + 204, w: 34, h: rowH },
+      };
+    }
+
+    function drawVersusOptionButton(rect, label, selected, enabled = true) {
+      ctx.save();
+      drawRoundedRect(rect.x, rect.y, rect.w, rect.h, 8);
+      ctx.fillStyle = selected ? "rgba(236,0,116,0.90)" : "rgba(8,10,18,0.86)";
+      ctx.fill();
+      ctx.strokeStyle = selected ? "rgba(255,255,255,0.28)" : "rgba(66,223,255,0.38)";
+      ctx.globalAlpha = enabled ? 1 : 0.48;
+      ctx.lineWidth = selected ? 2 : 1.5;
+      ctx.stroke();
+      ctx.font = `950 ${rect.w < 58 ? 11 : 12}px Inter, Segoe UI, Arial, sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "rgba(255,255,255,0.92)";
+      ctx.fillText(label, rect.x + rect.w / 2, rect.y + rect.h / 2 + 1);
+      ctx.restore();
+    }
+
+    function drawVersusSettingsPanel(roomPanel) {
+      if (game.multiplayer.roomMode !== "versus") return;
+      const rects = getVersusSettingsButtonRects(roomPanel);
+      const p = rects.panel;
+      const settings = sanitizeOnlineVersusSettings(game.versusSettings || onlineRoom.versus.settings);
+      const hostCanEdit = !!game.multiplayer.isHost;
+
+      ctx.save();
+      drawFullscreenSurface(p.x, p.y, p.w, p.h, { accent: "cyan", radius: 8, lineWidth: 1.5, strong: true });
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      ctx.font = "950 12px Inter, Segoe UI, Arial, sans-serif";
+      ctx.fillStyle = ONLINE_REMOTE_SECONDARY_COLOR;
+      ctx.fillText("CONFIG VERSUS", p.x + 16, p.y + 16);
+      ctx.font = "850 10px Inter, Segoe UI, Arial, sans-serif";
+      ctx.fillStyle = hostCanEdit ? "rgba(255,255,255,0.54)" : "rgba(255,255,255,0.38)";
+      ctx.fillText(hostCanEdit ? "El host define las reglas" : "Solo el host puede editar", p.x + 16, p.y + 34);
+
+      ctx.font = "900 10px Inter, Segoe UI, Arial, sans-serif";
+      ctx.fillStyle = "rgba(255,255,255,0.62)";
+      ctx.fillText("ARMA PRINCIPAL", p.x + 16, rects.weaponMulti.y - 18);
+      drawVersusOptionButton(rects.weaponMulti, "TIRO MULT.", settings.primaryWeapon === "multiShot", hostCanEdit);
+      drawVersusOptionButton(rects.weaponNormal, "NORMAL", settings.primaryWeapon === "normal", hostCanEdit);
+
+      ctx.fillStyle = "rgba(255,255,255,0.62)";
+      ctx.fillText("CLICK DERECHO", p.x + 16, rects.abilityPulse.y - 18);
+      drawVersusOptionButton(rects.abilityPulse, "PULSO", settings.rightAbility === "pulsador", hostCanEdit);
+      drawVersusOptionButton(rects.abilityHeal, "CURADOR", settings.rightAbility === "curador", hostCanEdit);
+
+      ctx.fillStyle = "rgba(255,255,255,0.62)";
+      ctx.fillText("VIDAS", p.x + 16, rects.lives3.y - 18);
+      drawVersusOptionButton(rects.lives3, "3", settings.lives === 3, hostCanEdit);
+      drawVersusOptionButton(rects.lives5, "5", settings.lives === 5, hostCanEdit);
+      drawVersusOptionButton(rects.lives7, "7", settings.lives === 7, hostCanEdit);
+
+      ctx.fillStyle = "rgba(255,255,255,0.62)";
+      ctx.fillText("PUNTOS PARA GANAR", p.x + 16, rects.pointsInput.y - 18);
+      if (!hostCanEdit) {
+        drawVersusOptionButton(rects.pointsInput, String(settings.targetScore), true, false);
+      }
+      drawVersusOptionButton(rects.pointsMinus, "-", false, hostCanEdit);
+      drawVersusOptionButton(rects.pointsPlus, "+", false, hostCanEdit);
+      ctx.restore();
+    }
+
+    function handleVersusSettingsClick(x, y) {
+      if (game.menuMode !== "roomLobby" || game.multiplayer.roomMode !== "versus") return false;
+      const rects = getVersusSettingsButtonRects(getMenuRoomPanelRect());
+      if (!pointInRect(x, y, rects.panel)) return false;
+      if (!game.multiplayer.isHost) return true;
+
+      const settings = sanitizeOnlineVersusSettings(game.versusSettings || onlineRoom.versus.settings);
+      let changed = false;
+
+      if (pointInRect(x, y, rects.weaponMulti)) { settings.primaryWeapon = "multiShot"; changed = true; }
+      else if (pointInRect(x, y, rects.weaponNormal)) { settings.primaryWeapon = "normal"; changed = true; }
+      else if (pointInRect(x, y, rects.abilityPulse)) { settings.rightAbility = "pulsador"; changed = true; }
+      else if (pointInRect(x, y, rects.abilityHeal)) { settings.rightAbility = "curador"; changed = true; }
+      else if (pointInRect(x, y, rects.lives3)) { settings.lives = 3; changed = true; }
+      else if (pointInRect(x, y, rects.lives5)) { settings.lives = 5; changed = true; }
+      else if (pointInRect(x, y, rects.lives7)) { settings.lives = 7; changed = true; }
+      else if (pointInRect(x, y, rects.pointsMinus)) { settings.targetScore = Math.max(1, settings.targetScore - 1); changed = true; }
+      else if (pointInRect(x, y, rects.pointsPlus)) { settings.targetScore = Math.min(100, settings.targetScore + 1); changed = true; }
+
+      if (changed) {
+        game.versusSettings = { ...settings };
+        sendOnlineVersusSettings(settings);
+      }
+      return true;
+    }
+
     function drawRoomLobbyMenu(panel) {
       syncRoomCodeBox();
+      syncVersusPointsBox();
       const mp = game.multiplayer;
       const cx = panel.x + panel.w / 2;
       const portrait = isPortraitMenuLayout();
@@ -11564,8 +11862,9 @@ if (player.stamina <= 0) return false;
       ctx.fillText(mp.roomCode || "----", cx, panel.y + (compact ? 126 : portrait ? 170 : 178));
       ctx.font = "950 11px Inter, Segoe UI, Arial, sans-serif";
       ctx.fillStyle = mp.roomMode === "versus" ? ONLINE_REMOTE_SECONDARY_COLOR : "#42dfff";
-      ctx.fillText(mp.roomMode === "versus" ? "VERSUS 1V1" : "NORMAL CO-OP", cx, panel.y + (compact ? 144 : portrait ? 192 : 202));
+      ctx.fillText(mp.roomMode === "versus" ? "VERSUS HASTA 3" : "NORMAL CO-OP", cx, panel.y + (compact ? 144 : portrait ? 192 : 202));
       ctx.restore();
+      drawVersusSettingsPanel(panel);
       const b = getRoomLobbyButtonRects();
       const cardW = Math.max(240, Math.min(560, panel.w - (compact ? 58 : portrait ? 48 : 180)));
       const cardX = cx - cardW / 2;
@@ -11636,6 +11935,39 @@ if (player.stamina <= 0) return false;
       roomCodeBox.style.transform = `scale(${scale})`;
       roomCodeInput.style.width = `${inputW}px`;
       roomCodeBox.style.display = "flex";
+    }
+
+    function syncVersusPointsBox() {
+      if (!versusPointsBox || !versusPointsInput) return;
+      const visible = game.state === "menu" &&
+        game.menuMode === "roomLobby" &&
+        game.multiplayer.roomMode === "versus" &&
+        game.multiplayer.isHost &&
+        !game.settingsOpen;
+
+      if (!visible) {
+        versusPointsBox.style.display = "none";
+        if (document.activeElement === versusPointsInput) versusPointsInput.blur();
+        return;
+      }
+
+      const rects = getVersusSettingsButtonRects(getMenuRoomPanelRect());
+      const target = rects.pointsInput;
+      const canvasRect = canvas.getBoundingClientRect();
+      const sx = canvasRect.width / Math.max(1, canvas.width);
+      const sy = canvasRect.height / Math.max(1, canvas.height);
+      const scale = Math.min(sx, sy);
+      const settings = sanitizeOnlineVersusSettings(game.versusSettings || onlineRoom.versus.settings);
+
+      if (document.activeElement !== versusPointsInput) versusPointsInput.value = String(settings.targetScore);
+      versusPointsBox.style.left = `${Math.round(canvasRect.left + target.x * sx)}px`;
+      versusPointsBox.style.top = `${Math.round(canvasRect.top + target.y * sy)}px`;
+      versusPointsBox.style.width = `${Math.round(target.w * sx)}px`;
+      versusPointsBox.style.height = `${Math.round(target.h * sy)}px`;
+      versusPointsBox.style.transformOrigin = "top left";
+      versusPointsBox.style.transform = `scale(${scale})`;
+      versusPointsInput.style.width = `${Math.max(70, Math.round(target.w))}px`;
+      versusPointsBox.style.display = "flex";
     }
 
     function drawSettingsIcon() {
@@ -12053,16 +12385,13 @@ if (player.stamina <= 0) return false;
     function drawVersusUI() {
       if (!isOnlineVersusMode() || game.state === "menu") return;
 
-      const score = game.versus.score || { p1: 0, p2: 0 };
-      const localId = onlineRoom.playerId || "p1";
-      const rivalId = getOnlineVersusOpponentId(localId);
-      const localScore = Number(score[localId]) || 0;
-      const rivalScore = Number(score[rivalId]) || 0;
+      const score = game.versus.score || { p1: 0, p2: 0, p3: 0 };
+      const settings = sanitizeOnlineVersusSettings(game.versusSettings || onlineRoom.versus.settings);
       const lock = Math.ceil(Math.max(0, game.versus.shootLockTimer || 0));
       const x = mobileInput.enabled ? 12 : 24;
       const y = mobileInput.enabled ? 10 : 22;
-      const w = mobileInput.enabled ? Math.min(canvas.width - 88, 300) : 260;
-      const h = lock > 0 ? 114 : 94;
+      const w = mobileInput.enabled ? Math.min(canvas.width - 88, 340) : 300;
+      const h = lock > 0 ? 134 : 114;
 
       ctx.save();
       ctx.textAlign = "left";
@@ -12081,13 +12410,14 @@ if (player.stamina <= 0) return false;
       ctx.fillText("VERSUS", x + 32, y + 12);
       ctx.font = "900 13px Inter, Montserrat, Arial, sans-serif";
       ctx.fillStyle = "#42dfff";
-      ctx.fillText(`VOS ${localScore}  -  ${rivalScore} RIVAL`, x + 32, y + 42);
+      ctx.fillText(getOnlineVersusScoreText() || "MARCADOR 0", x + 32, y + 42);
       ctx.font = "800 11px Inter, Montserrat, Arial, sans-serif";
       ctx.fillStyle = "rgba(255,255,255,0.66)";
-      ctx.fillText(`OBJETIVO: ${game.versus.targetScore || 3}`, x + 32, y + 64);
+      ctx.fillText(`OBJETIVO: ${settings.targetScore}  VIDAS: ${settings.lives}`, x + 32, y + 64);
+      ctx.fillText(`${settings.primaryWeapon === "multiShot" ? "TIRO MULTIPLE" : "ARMA NORMAL"} / ${settings.rightAbility === "pulsador" ? "PULSO" : "CURADOR"}`, x + 32, y + 84);
       if (lock > 0) {
         ctx.fillStyle = game.ruby;
-        ctx.fillText(`PULSADOR: SIN DISPARO ${lock}s`, x + 32, y + 84);
+        ctx.fillText(`PULSADOR: SIN DISPARO ${lock}s`, x + 32, y + 104);
       }
       ctx.restore();
 
